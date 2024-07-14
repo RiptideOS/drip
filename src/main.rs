@@ -1,31 +1,16 @@
 use std::path::PathBuf;
 
 use clap::{error::ErrorKind, CommandFactory, Parser as ClapParser};
-use lexer::Span;
+use frontend::{SourceFile, SourceFileOrigin};
 
-use crate::parser::Parser;
+use crate::frontend::parser::Parser;
 
-mod ast;
-mod intern;
-mod lexer;
-mod parser;
+mod frontend;
 
 #[derive(Debug, ClapParser)]
 #[command(version, about, long_about = None)]
 pub struct Args {
     source_files: Vec<PathBuf>,
-}
-
-#[derive(Debug)]
-pub struct SourceFile {
-    pub contents: String,
-    pub path: PathBuf,
-}
-
-impl SourceFile {
-    pub fn value_of_span(&self, span: Span) -> &str {
-        &self.contents[span.start..span.end]
-    }
 }
 
 fn main() {
@@ -66,7 +51,10 @@ fn main() {
             let contents = std::fs::read_to_string(&path)
                 .expect("Failed to read input file (or invalid UTF-8)");
 
-            SourceFile { contents, path }
+            SourceFile {
+                contents,
+                origin: SourceFileOrigin::File(path),
+            }
         })
         .collect::<Vec<_>>();
 

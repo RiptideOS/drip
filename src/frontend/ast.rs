@@ -1,4 +1,4 @@
-use crate::{intern::INTERNING_TABLE, lexer::Span};
+use crate::frontend::{intern::INTERNING_TABLE, lexer::Span};
 
 #[derive(Debug)]
 pub struct Module {

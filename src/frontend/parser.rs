@@ -1,4 +1,4 @@
-use crate::{
+use crate::frontend::{
     ast::{
         AssignmentOperatorKind, BinaryOperator, BinaryOperatorKind, Block, Expression,
         ExpressionKind, FunctionCallArgumentList, FunctionDefinition, FunctionParameter,
@@ -42,7 +42,7 @@ impl<'source> Parser<'source> {
     fn report_fatal_error(&self, message: &str) -> ! {
         eprintln!(
             "Fatal error reported in Parser ({}:{}:{}):",
-            self.lexer.source().path.display(),
+            self.lexer.source().origin,
             self.lexer.line_number() + 1,
             self.lexer.column()
         );

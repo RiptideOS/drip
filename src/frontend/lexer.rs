@@ -197,10 +197,6 @@ impl Span {
     pub fn new(start: usize, end: usize) -> Self {
         Self { start, end }
     }
-
-    pub fn len(&self) -> usize {
-        self.end - self.start
-    }
 }
 
 impl<'source> Lexer<'source> {
@@ -239,7 +235,7 @@ impl<'source> Lexer<'source> {
     fn report_fatal_error(&self, message: &str) -> ! {
         eprintln!(
             "Fatal error reported in Lexer ({}:{}:{}):",
-            self.source.path.display(),
+            self.source.origin,
             self.line_number + 1,
             self.column()
         );
