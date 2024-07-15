@@ -33,3 +33,28 @@ impl InterningTable {
         strings.iter().position(|s| *s == string)
     }
 }
+
+/// An index into the string interning table
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InternedSymbol(usize);
+
+impl InternedSymbol {
+    pub fn new(value: &str) -> Self {
+        let index = INTERNING_TABLE.insert_if_absent(value);
+
+        Self(index)
+    }
+
+    pub fn value(&self) -> &'static str {
+        INTERNING_TABLE.get(self.0).expect("Once an interned symbol is created, the string it references should never be removed from the table")
+    }
+}
+
+impl core::fmt::Debug for InternedSymbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("InternedSymbol")
+            .field(&self.0)
+            .field(&self.value())
+            .finish()
+    }
+}

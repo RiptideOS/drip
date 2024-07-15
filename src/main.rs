@@ -1,9 +1,12 @@
 use std::path::PathBuf;
 
 use clap::{error::ErrorKind, CommandFactory, Parser as ClapParser};
-use frontend::{resolve::Resolver, SourceFile, SourceFileOrigin};
+use middle::type_checker::TypeChecker;
 
-use crate::frontend::parser::Parser;
+use crate::{
+    frontend::{parser::Parser, SourceFile, SourceFileOrigin},
+    middle::resolve::Resolver,
+};
 
 mod frontend;
 mod middle;
@@ -67,5 +70,9 @@ fn main() {
         let name_resolutions = Resolver::resolve_names(&module);
 
         println!("{:#?}", name_resolutions);
+
+        let hir_module = TypeChecker::type_check_module(&module, &name_resolutions);
+
+        println!("{:#?}", hir_module);
     }
 }

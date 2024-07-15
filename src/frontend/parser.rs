@@ -4,15 +4,15 @@ use crate::frontend::{
     ast::{
         AssignmentOperatorKind, BinaryOperator, BinaryOperatorKind, Block, Expression,
         ExpressionKind, FunctionCallArgumentList, FunctionDefinition, FunctionParameter,
-        FunctionParameterList, FunctionSignature, Identifier, InternedSymbol, Literal, LiteralKind,
-        Local, LocalKind, Module, QualifiedIdentifier, Statement, StatementKind, Type, TypeKind,
+        FunctionParameterList, FunctionSignature, Identifier, Literal, LiteralKind, Local,
+        LocalKind, Module, QualifiedIdentifier, Statement, StatementKind, Type, TypeKind,
         UnaryOperator, UnaryOperatorKind,
     },
     lexer::{Keyword, Lexer, Span, Token, TokenKind},
     SourceFile,
 };
 
-use super::ast::NodeId;
+use super::{ast::NodeId, intern::InternedSymbol};
 
 #[derive(Debug)]
 pub struct Parser<'source> {
@@ -362,7 +362,7 @@ impl<'source> Parser<'source> {
         let name = self.parse_identifier();
 
         let ty = if self.expect_peek("colon, equals, or semicolon").kind == TokenKind::Colon {
-            self.expect_next_to_be(TokenKind::Arrow);
+            self.expect_next_to_be(TokenKind::Colon);
             Some(self.parse_type())
         } else {
             None
@@ -412,7 +412,7 @@ impl<'source> Parser<'source> {
     /// term           -> factor ( ( "-" | "+" ) factor )*
     /// factor         -> cast ( ( "/" | "*" | "%" ) cast )*
     /// cast           -> unary ( "as" TYPE )*
-    /// unary          -> ( "!" | "-" | "*" ) unary
+    /// unary          -> ( "!" | "~" | "-" | "*" ) unary
     ///                   | function_call
     /// function_call  -> block ( "(" ( expression ( "," expression )* )? ")" )*
     /// block          -> BLOCK
@@ -446,14 +446,13 @@ impl<'source> Parser<'source> {
 
         if self.expect_peek("expression").kind == TokenKind::Keyword(Keyword::Return) {
             let return_keyword = self.expect_keyword(Keyword::Return);
-            let assignment = self.parse_assignment_expression();
 
             let peeked = self.expect_peek("semicolon, closing brace, or expression");
 
             // Unless we are at the end of a block or have a semicolon we expect an expression to follow
             let expression = (peeked.kind != TokenKind::Semicolon
                 && peeked.kind != TokenKind::CloseBrace)
-                .then(|| self.parse_expression());
+                .then(|| self.parse_assignment_expression());
 
             return Expression {
                 id: self.next_id(),
@@ -462,7 +461,7 @@ impl<'source> Parser<'source> {
                     expression
                         .as_ref()
                         .map(|e| e.span.end)
-                        .unwrap_or(assignment.span.end),
+                        .unwrap_or(return_keyword.span.end),
                 ),
                 kind: ExpressionKind::Return(expression.map(Box::new)),
             };
@@ -869,7 +868,8 @@ impl<'source> Parser<'source> {
             span: operator.span,
             kind: match operator.kind {
                 TokenKind::Asterisk => UnaryOperatorKind::Deref,
-                TokenKind::Bang => UnaryOperatorKind::Invert,
+                TokenKind::Bang => UnaryOperatorKind::LogicalNot,
+                TokenKind::Tilde => UnaryOperatorKind::BitwiseNot,
                 TokenKind::Minus => UnaryOperatorKind::Negate,
                 _ => unreachable!(),
             },
@@ -890,7 +890,7 @@ impl<'source> Parser<'source> {
                 id: self.next_id(),
                 span: Span::new(expression.span.start, arguments.span.end),
                 kind: ExpressionKind::FunctionCall {
-                    function: Box::new(expression),
+                    target: Box::new(expression),
                     arguments: Box::new(arguments),
                 },
             }

@@ -56,7 +56,8 @@ pub enum TokenKind {
     Arrow,       // ->
 
     /* Unary Ops */
-    Bang, // !
+    Bang,  // !
+    Tilde, // ~
 
     /* Unary + Binary Ops */
     Asterisk, // *
@@ -141,7 +142,10 @@ impl TokenKind {
     }
 
     pub fn is_unary_operator(&self) -> bool {
-        matches!(self, Self::Asterisk | Self::Bang | Self::Minus)
+        matches!(
+            self,
+            Self::Asterisk | Self::Bang | Self::Tilde | Self::Minus
+        )
     }
 }
 
@@ -172,6 +176,7 @@ static SINGLE_TOKENS: Lazy<BTreeMap<char, TokenKind>> = Lazy::new(|| {
         (';', TokenKind::Semicolon),
         (',', TokenKind::Comma),
         ('!', TokenKind::Bang),
+        ('~', TokenKind::Tilde),
         (':', TokenKind::Colon),
         ('*', TokenKind::Asterisk),
         ('-', TokenKind::Minus),

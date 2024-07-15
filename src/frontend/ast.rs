@@ -1,12 +1,18 @@
-use crate::frontend::{intern::INTERNING_TABLE, lexer::Span};
+use crate::{frontend::lexer::Span, middle::resolve::DefinitionId};
 
-use super::SourceFile;
+use super::{intern::InternedSymbol, SourceFile};
 
 #[derive(Debug)]
 pub struct Module<'source> {
     pub id: u32,
     pub source_file: &'source SourceFile,
     pub function_definitions: Vec<FunctionDefinition>,
+}
+
+impl<'source> Module<'source> {
+    pub fn definition_id_for(&self, node_id: NodeId) -> DefinitionId {
+        DefinitionId::new_module(self.id, node_id)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -70,31 +76,6 @@ pub struct Identifier {
     pub symbol: InternedSymbol,
 }
 
-/// An index into the string interning table
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct InternedSymbol(usize);
-
-impl InternedSymbol {
-    pub fn new(value: &str) -> Self {
-        let index = INTERNING_TABLE.insert_if_absent(value);
-
-        Self(index)
-    }
-
-    pub fn value(&self) -> &'static str {
-        INTERNING_TABLE.get(self.0).expect("Once an interned symbol is created, the string it references should never be removed from the table")
-    }
-}
-
-impl core::fmt::Debug for InternedSymbol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("InternedSymbol")
-            .field(&self.0)
-            .field(&self.value())
-            .finish()
-    }
-}
-
 #[derive(Debug)]
 pub struct Block {
     pub id: NodeId,
@@ -151,7 +132,7 @@ pub enum ExpressionKind {
     Grouping(Box<Expression>),
     Block(Box<Block>),
     FunctionCall {
-        function: Box<Expression>,
+        target: Box<Expression>,
         arguments: Box<FunctionCallArgumentList>,
     },
     Binary {
@@ -206,7 +187,7 @@ pub struct BinaryOperator {
     pub kind: BinaryOperatorKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOperatorKind {
     Add,                  // +
     Subtract,             // -
@@ -235,11 +216,12 @@ pub struct UnaryOperator {
     pub kind: UnaryOperatorKind,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOperatorKind {
-    Deref,  // *
-    Invert, // !
-    Negate, // -
+    Deref,      // *
+    LogicalNot, // !
+    BitwiseNot, // ~
+    Negate,     // -
 }
 
 #[derive(Debug)]
