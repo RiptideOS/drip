@@ -1,4 +1,4 @@
-use crate::{frontend::lexer::Span, middle::resolve::DefinitionId};
+use crate::frontend::lexer::Span;
 
 use super::{intern::InternedSymbol, SourceFile};
 
@@ -7,12 +7,6 @@ pub struct Module<'source> {
     pub id: u32,
     pub source_file: &'source SourceFile,
     pub function_definitions: Vec<FunctionDefinition>,
-}
-
-impl<'source> Module<'source> {
-    pub fn definition_id_for(&self, node_id: NodeId) -> DefinitionId {
-        DefinitionId::new_module(self.id, node_id)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

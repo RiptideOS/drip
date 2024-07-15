@@ -1,12 +1,9 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use strum::{EnumIter, EnumString};
-
 use crate::frontend::{
     ast::{
-        BinaryOperatorKind, Block, Expression, ExpressionKind, FunctionDefinition,
-        FunctionParameter, Local, LocalKind, Module, NodeId, QualifiedIdentifier, Statement,
-        StatementKind, Type, TypeKind, UnaryOperatorKind,
+        Block, Expression, ExpressionKind, FunctionDefinition, FunctionParameter, Local, LocalKind,
+        Module, NodeId, QualifiedIdentifier, Statement, StatementKind, Type, TypeKind,
     },
     intern::InternedSymbol,
     lexer::Span,
