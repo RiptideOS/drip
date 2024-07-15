@@ -1,18 +1,28 @@
 use crate::frontend::{intern::INTERNING_TABLE, lexer::Span};
 
+use super::SourceFile;
+
 #[derive(Debug)]
-pub struct Module {
+pub struct Module<'source> {
+    pub id: u32,
+    pub source_file: &'source SourceFile,
     pub function_definitions: Vec<FunctionDefinition>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NodeId(pub u32);
+
 #[derive(Debug)]
 pub struct FunctionDefinition {
+    pub id: NodeId,
+    pub span: Span,
     pub signature: FunctionSignature,
     pub body: Block,
 }
 
 #[derive(Debug)]
 pub struct FunctionSignature {
+    pub id: NodeId,
     pub span: Span,
     pub name: Identifier,
     pub parameters: FunctionParameterList,
@@ -21,12 +31,14 @@ pub struct FunctionSignature {
 
 #[derive(Debug)]
 pub struct FunctionParameterList {
+    pub id: NodeId,
     pub span: Span,
     pub parameters: Vec<FunctionParameter>,
 }
 
 #[derive(Debug)]
 pub struct FunctionParameter {
+    pub id: NodeId,
     pub span: Span,
     pub name: Identifier,
     pub ty: Type,
@@ -34,6 +46,7 @@ pub struct FunctionParameter {
 
 #[derive(Debug)]
 pub struct Type {
+    pub id: NodeId,
     pub span: Span,
     pub kind: TypeKind,
 }
@@ -45,17 +58,20 @@ pub enum TypeKind {
 
 #[derive(Debug)]
 pub struct QualifiedIdentifier {
+    pub id: NodeId,
     pub span: Span,
     pub segments: Vec<Identifier>,
 }
 
 #[derive(Debug)]
 pub struct Identifier {
+    pub id: NodeId,
     pub span: Span,
     pub symbol: InternedSymbol,
 }
 
 /// An index into the string interning table
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct InternedSymbol(usize);
 
 impl InternedSymbol {
@@ -81,12 +97,14 @@ impl core::fmt::Debug for InternedSymbol {
 
 #[derive(Debug)]
 pub struct Block {
+    pub id: NodeId,
     pub span: Span,
     pub statements: Vec<Statement>,
 }
 
 #[derive(Debug)]
 pub struct Statement {
+    pub id: NodeId,
     pub span: Span,
     pub kind: StatementKind,
 }
@@ -105,6 +123,7 @@ pub enum StatementKind {
 
 #[derive(Debug)]
 pub struct Local {
+    pub id: NodeId,
     pub span: Span,
     pub is_mutable: bool,
     pub name: Identifier,
@@ -120,6 +139,7 @@ pub enum LocalKind {
 
 #[derive(Debug)]
 pub struct Expression {
+    pub id: NodeId,
     pub span: Span,
     pub kind: ExpressionKind,
 }
@@ -174,12 +194,14 @@ pub enum ExpressionKind {
 
 #[derive(Debug)]
 pub struct FunctionCallArgumentList {
+    pub id: NodeId,
     pub span: Span,
     pub arguments: Vec<Expression>,
 }
 
 #[derive(Debug)]
 pub struct BinaryOperator {
+    pub id: NodeId,
     pub span: Span,
     pub kind: BinaryOperatorKind,
 }
@@ -208,6 +230,7 @@ pub enum BinaryOperatorKind {
 
 #[derive(Debug)]
 pub struct UnaryOperator {
+    pub id: NodeId,
     pub span: Span,
     pub kind: UnaryOperatorKind,
 }
@@ -221,6 +244,7 @@ pub enum UnaryOperatorKind {
 
 #[derive(Debug)]
 pub struct Literal {
+    pub id: NodeId,
     pub span: Span,
     pub kind: LiteralKind,
     pub symbol: InternedSymbol,

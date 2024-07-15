@@ -1,11 +1,12 @@
 use std::path::PathBuf;
 
 use clap::{error::ErrorKind, CommandFactory, Parser as ClapParser};
-use frontend::{SourceFile, SourceFileOrigin};
+use frontend::{resolve::Resolver, SourceFile, SourceFileOrigin};
 
 use crate::frontend::parser::Parser;
 
 mod frontend;
+mod middle;
 
 #[derive(Debug, ClapParser)]
 #[command(version, about, long_about = None)]
@@ -62,5 +63,9 @@ fn main() {
         let module = Parser::parse_module(source_file);
 
         println!("{:#?}", module);
+
+        let name_resolutions = Resolver::resolve_names(&module);
+
+        println!("{:#?}", name_resolutions);
     }
 }

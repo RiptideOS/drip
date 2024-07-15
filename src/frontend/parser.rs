@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use crate::frontend::{
     ast::{
         AssignmentOperatorKind, BinaryOperator, BinaryOperatorKind, Block, Expression,
@@ -10,9 +12,12 @@ use crate::frontend::{
     SourceFile,
 };
 
+use super::ast::NodeId;
+
 #[derive(Debug)]
 pub struct Parser<'source> {
     lexer: Lexer<'source>,
+    next_node_id: u32,
 }
 
 #[derive(Debug)]
@@ -20,13 +25,18 @@ enum ModuleItem {
     FunctionDefinition(FunctionDefinition),
 }
 
+static GLOBAL_MODULE_ID_COUNTER: AtomicU32 = AtomicU32::new(0);
+
 impl<'source> Parser<'source> {
     pub fn parse_module(source_file: &'source SourceFile) -> Module {
         let mut parser = Self {
             lexer: Lexer::new(source_file),
+            next_node_id: 0,
         };
 
         let mut module = Module {
+            id: GLOBAL_MODULE_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
+            source_file,
             function_definitions: Vec::new(),
         };
 
@@ -37,6 +47,12 @@ impl<'source> Parser<'source> {
         }
 
         module
+    }
+
+    fn next_id(&mut self) -> NodeId {
+        let id = NodeId(self.next_node_id);
+        self.next_node_id += 1;
+        id
     }
 
     fn report_fatal_error(&self, message: &str) -> ! {
@@ -104,12 +120,17 @@ impl<'source> Parser<'source> {
 
     /// fn name(param: ty) -> return_type {}
     fn parse_function_definition(&mut self) -> FunctionDefinition {
-        self.expect_keyword(Keyword::Fn);
+        let fn_keyword = self.expect_keyword(Keyword::Fn);
 
         let signature = self.parse_function_signature();
         let body = self.parse_block();
 
-        FunctionDefinition { signature, body }
+        FunctionDefinition {
+            id: self.next_id(),
+            span: Span::new(fn_keyword.span.start, body.span.end),
+            signature,
+            body,
+        }
     }
 
     /// name(param: ty) -> return_type
@@ -132,6 +153,7 @@ impl<'source> Parser<'source> {
         );
 
         FunctionSignature {
+            id: self.next_id(),
             span,
             name,
             parameters,
@@ -142,11 +164,11 @@ impl<'source> Parser<'source> {
     // main
     fn parse_identifier(&mut self) -> Identifier {
         let token = self.expect_next_to_be(TokenKind::Identifier);
-        let value = self.lexer.source().value_of_span(token.span);
 
         Identifier {
+            id: self.next_id(),
             span: token.span,
-            symbol: InternedSymbol::new(value),
+            symbol: InternedSymbol::new(self.lexer.source().value_of_span(token.span)),
         }
     }
 
@@ -165,6 +187,7 @@ impl<'source> Parser<'source> {
         }
 
         QualifiedIdentifier {
+            id: self.next_id(),
             span: Span::new(
                 segments.first().unwrap().span.start,
                 segments.last().unwrap().span.end,
@@ -200,6 +223,7 @@ impl<'source> Parser<'source> {
         let close_paren = self.expect_next_to_be(TokenKind::CloseParen);
 
         FunctionParameterList {
+            id: self.next_id(),
             span: Span::new(open_paren.span.start, close_paren.span.end),
             parameters,
         }
@@ -212,6 +236,7 @@ impl<'source> Parser<'source> {
         let ty = self.parse_type();
 
         FunctionParameter {
+            id: self.next_id(),
             span: Span::new(name.span.start, ty.span.end),
             name,
             ty,
@@ -220,11 +245,12 @@ impl<'source> Parser<'source> {
 
     // i32
     fn parse_type(&mut self) -> Type {
-        let identifier = self.parse_qualified_identifier();
+        let qualified_identifier = self.parse_qualified_identifier();
 
         Type {
-            span: identifier.span,
-            kind: TypeKind::QualifiedIdentifier(identifier),
+            id: self.next_id(),
+            span: qualified_identifier.span,
+            kind: TypeKind::QualifiedIdentifier(qualified_identifier),
         }
     }
 
@@ -253,6 +279,7 @@ impl<'source> Parser<'source> {
         let close_brace = self.expect_next_to_be(TokenKind::CloseBrace);
 
         Block {
+            id: self.next_id(),
             span: Span::new(open_brace.span.start, close_brace.span.end),
             statements,
         }
@@ -263,6 +290,7 @@ impl<'source> Parser<'source> {
             let local = self.parse_local();
 
             return Statement {
+                id: self.next_id(),
                 span: local.span,
                 kind: StatementKind::Local(Box::new(local)),
             };
@@ -272,14 +300,13 @@ impl<'source> Parser<'source> {
             let semicolon = self.expect_next_to_be(TokenKind::Semicolon);
 
             return Statement {
+                id: self.next_id(),
                 span: semicolon.span,
                 kind: StatementKind::Empty,
             };
         }
 
         let expression = self.parse_expression();
-
-        // TODO: require a semicolon unless reached end of block or we just parsed an expression with a block
 
         let peeked = self.expect_peek("semicolon or closing brace");
 
@@ -303,6 +330,7 @@ impl<'source> Parser<'source> {
             }
 
             return Statement {
+                id: self.next_id(),
                 span: expression.span,
                 kind: StatementKind::BareExpr(Box::new(expression)),
             };
@@ -311,6 +339,7 @@ impl<'source> Parser<'source> {
         let semicolon = self.expect_next_to_be(TokenKind::Semicolon);
 
         Statement {
+            id: self.next_id(),
             span: Span::new(expression.span.start, semicolon.span.end),
             kind: StatementKind::SemiExpr(Box::new(expression)),
         }
@@ -359,6 +388,7 @@ impl<'source> Parser<'source> {
         };
 
         Local {
+            id: self.next_id(),
             span,
             is_mutable,
             name,
@@ -382,7 +412,7 @@ impl<'source> Parser<'source> {
     /// term           -> factor ( ( "-" | "+" ) factor )*
     /// factor         -> cast ( ( "/" | "*" | "%" ) cast )*
     /// cast           -> unary ( "as" TYPE )*
-    /// unary          -> ( "!" | "-" | "*" ) function_call
+    /// unary          -> ( "!" | "-" | "*" ) unary
     ///                   | function_call
     /// function_call  -> block ( "(" ( expression ( "," expression )* )? ")" )*
     /// block          -> BLOCK
@@ -398,6 +428,7 @@ impl<'source> Parser<'source> {
             let break_keyword = self.expect_keyword(Keyword::Break);
 
             return Expression {
+                id: self.next_id(),
                 span: break_keyword.span,
                 kind: ExpressionKind::Break,
             };
@@ -407,6 +438,7 @@ impl<'source> Parser<'source> {
             let continue_keyword = self.expect_keyword(Keyword::Continue);
 
             return Expression {
+                id: self.next_id(),
                 span: continue_keyword.span,
                 kind: ExpressionKind::Continue,
             };
@@ -424,6 +456,7 @@ impl<'source> Parser<'source> {
                 .then(|| self.parse_expression());
 
             return Expression {
+                id: self.next_id(),
                 span: Span::new(
                     return_keyword.span.start,
                     expression
@@ -457,6 +490,7 @@ impl<'source> Parser<'source> {
             // that fact
             expression = if let Some(operator) = operator {
                 Expression {
+                    id: self.next_id(),
                     span,
                     kind: ExpressionKind::OperatorAssignment {
                         operator,
@@ -466,6 +500,7 @@ impl<'source> Parser<'source> {
                 }
             } else {
                 Expression {
+                    id: self.next_id(),
                     span,
                     kind: ExpressionKind::Assignment {
                         lhs: Box::new(expression),
@@ -506,10 +541,12 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_logical_and_expression();
 
             expression = Expression {
+                id: self.next_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
                     operator: BinaryOperator {
+                        id: self.next_id(),
                         span: operator.span,
                         kind: BinaryOperatorKind::LogicalOr,
                     },
@@ -529,10 +566,12 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_comparison_expression();
 
             expression = Expression {
+                id: self.next_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
                     operator: BinaryOperator {
+                        id: self.next_id(),
                         span: operator.span,
                         kind: BinaryOperatorKind::LogicalAnd,
                     },
@@ -556,6 +595,7 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_bitwise_or_expression();
 
             expression = Expression {
+                id: self.next_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
@@ -572,6 +612,7 @@ impl<'source> Parser<'source> {
         let operator = self.expect_next("comparison operator");
 
         BinaryOperator {
+            id: self.next_id(),
             span: operator.span,
             kind: match operator.kind {
                 TokenKind::NotEquals => BinaryOperatorKind::NotEquals,
@@ -593,10 +634,12 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_bitwise_xor_expression();
 
             expression = Expression {
+                id: self.next_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
                     operator: BinaryOperator {
+                        id: self.next_id(),
                         span: operator.span,
                         kind: BinaryOperatorKind::BitwiseOr,
                     },
@@ -616,10 +659,12 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_bitwise_and_expression();
 
             expression = Expression {
+                id: self.next_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
                     operator: BinaryOperator {
+                        id: self.next_id(),
                         span: operator.span,
                         kind: BinaryOperatorKind::BitwiseXor,
                     },
@@ -639,10 +684,12 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_bit_shift_expression();
 
             expression = Expression {
+                id: self.next_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
                     operator: BinaryOperator {
+                        id: self.next_id(),
                         span: operator.span,
                         kind: BinaryOperatorKind::BitwiseAnd,
                     },
@@ -666,6 +713,7 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_term_expression();
 
             expression = Expression {
+                id: self.next_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
@@ -682,6 +730,7 @@ impl<'source> Parser<'source> {
         let operator = self.expect_next("bit shift operator");
 
         BinaryOperator {
+            id: self.next_id(),
             span: operator.span,
             kind: match operator.kind {
                 TokenKind::ShiftLeft => BinaryOperatorKind::ShiftLeft,
@@ -703,6 +752,7 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_factor_expression();
 
             expression = Expression {
+                id: self.next_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
@@ -719,6 +769,7 @@ impl<'source> Parser<'source> {
         let operator = self.expect_next("term operator");
 
         BinaryOperator {
+            id: self.next_id(),
             span: operator.span,
             kind: match operator.kind {
                 TokenKind::Plus => BinaryOperatorKind::Add,
@@ -740,6 +791,7 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_cast_expression();
 
             expression = Expression {
+                id: self.next_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
@@ -756,6 +808,7 @@ impl<'source> Parser<'source> {
         let operator = self.expect_next("factor operator");
 
         BinaryOperator {
+            id: self.next_id(),
             span: operator.span,
             kind: match operator.kind {
                 TokenKind::Asterisk => BinaryOperatorKind::Multiply,
@@ -774,6 +827,7 @@ impl<'source> Parser<'source> {
             let ty = self.parse_type();
 
             expression = Expression {
+                id: self.next_id(),
                 span: Span::new(expression.span.start, ty.span.end),
                 kind: ExpressionKind::Cast {
                     expression: Box::new(expression),
@@ -792,9 +846,10 @@ impl<'source> Parser<'source> {
             .is_unary_operator()
         {
             let operator = self.parse_unary_operator();
-            let operand = self.parse_function_call_expression();
+            let operand = self.parse_unary_expression();
 
             return Expression {
+                id: self.next_id(),
                 span: Span::new(operator.span.start, operand.span.end),
                 kind: ExpressionKind::Unary {
                     operator,
@@ -810,6 +865,7 @@ impl<'source> Parser<'source> {
         let operator = self.expect_next("unary operator");
 
         UnaryOperator {
+            id: self.next_id(),
             span: operator.span,
             kind: match operator.kind {
                 TokenKind::Asterisk => UnaryOperatorKind::Deref,
@@ -831,6 +887,7 @@ impl<'source> Parser<'source> {
             let arguments = self.parse_function_call_arguments();
 
             expression = Expression {
+                id: self.next_id(),
                 span: Span::new(expression.span.start, arguments.span.end),
                 kind: ExpressionKind::FunctionCall {
                     function: Box::new(expression),
@@ -872,6 +929,7 @@ impl<'source> Parser<'source> {
         let close_paren = self.expect_next_to_be(TokenKind::CloseParen);
 
         FunctionCallArgumentList {
+            id: self.next_id(),
             span: Span::new(open_paren.span.start, close_paren.span.end),
             arguments,
         }
@@ -909,6 +967,7 @@ impl<'source> Parser<'source> {
         let block = self.parse_block();
 
         Expression {
+            id: self.next_id(),
             span: block.span,
             kind: ExpressionKind::Block(Box::new(block)),
         }
@@ -945,6 +1004,7 @@ impl<'source> Parser<'source> {
         });
 
         Expression {
+            id: self.next_id(),
             span: Span::new(
                 if_keyword.span.start,
                 negative
@@ -967,6 +1027,7 @@ impl<'source> Parser<'source> {
         let block = self.parse_block();
 
         Expression {
+            id: self.next_id(),
             span: Span::new(while_keyword.span.start, block.span.end),
             kind: ExpressionKind::While {
                 condition: Box::new(condition),
@@ -985,6 +1046,7 @@ impl<'source> Parser<'source> {
             let qualified_identifier = self.parse_qualified_identifier();
 
             return Expression {
+                id: self.next_id(),
                 span: qualified_identifier.span,
                 kind: ExpressionKind::QualifiedIdentifier(Box::new(qualified_identifier)),
             };
@@ -999,6 +1061,7 @@ impl<'source> Parser<'source> {
         let literal = self.parse_literal();
 
         Expression {
+            id: self.next_id(),
             span: literal.span,
             kind: ExpressionKind::Literal(Box::new(literal)),
         }
@@ -1010,6 +1073,7 @@ impl<'source> Parser<'source> {
         let close_paren = self.expect_next_to_be(TokenKind::CloseParen);
 
         Expression {
+            id: self.next_id(),
             span: Span::new(open_paren.span.start, close_paren.span.end),
             kind: ExpressionKind::Grouping(Box::new(expression)),
         }
@@ -1033,12 +1097,12 @@ impl<'source> Parser<'source> {
                 self.lexer.source().value_of_span(token.span)
             )),
         };
-        let value = self.lexer.source().value_of_span(token.span);
 
         Literal {
+            id: self.next_id(),
             span: token.span,
             kind,
-            symbol: InternedSymbol::new(value),
+            symbol: InternedSymbol::new(self.lexer.source().value_of_span(token.span)),
         }
     }
 }
