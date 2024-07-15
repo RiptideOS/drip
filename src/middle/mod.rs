@@ -3,5 +3,6 @@
 //! and flattened to LIR.
 
 pub mod hir;
+pub mod primitive;
 pub mod resolve;
 pub mod type_checker;

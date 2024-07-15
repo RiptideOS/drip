@@ -19,7 +19,8 @@ use super::{
         HirBlock, HirExpression, HirExpressionKind, HirFunctionDefinition, HirFunctionParameter,
         HirLiteral, HirLocal, HirLocalKind, HirModule, HirStatement,
     },
-    resolve::{DefinitionId, ModuleResolutionMap, PrimitiveKind, ValueDefinitionKind},
+    primitive::PrimitiveKind,
+    resolve::{DefinitionId, ModuleResolutionMap, ValueDefinitionKind},
 };
 
 #[derive(Debug)]
