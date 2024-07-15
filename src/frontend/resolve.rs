@@ -95,11 +95,12 @@ impl<'module> Resolver<'module> {
             self.module.source_file.origin,
             self.module
                 .source_file
-                .line_number_for_position(offending_span.start),
+                .row_for_position(offending_span.start),
             self.module
                 .source_file
                 .column_for_position(offending_span.start)
         );
+        self.module.source_file.highlight_span(offending_span);
         // TODO: show where the original binding was defined
         // TODO: recover from this error and keep moving
         std::process::exit(1);
@@ -112,11 +113,12 @@ impl<'module> Resolver<'module> {
             self.module.source_file.origin,
             self.module
                 .source_file
-                .line_number_for_position(offending_span.start),
+                .row_for_position(offending_span.start),
             self.module
                 .source_file
                 .column_for_position(offending_span.start)
         );
+        self.module.source_file.highlight_span(offending_span);
         // TODO: recover from this error and keep moving
         std::process::exit(1);
     }
