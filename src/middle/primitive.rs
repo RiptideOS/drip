@@ -3,7 +3,7 @@ use strum::{EnumIter, EnumString};
 use crate::frontend::ast::{BinaryOperatorKind, UnaryOperatorKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, EnumIter)]
-#[strum(serialize_all = "snake_case")]
+#[strum(serialize_all = "lowercase")]
 pub enum PrimitiveKind {
     Unit,
     U8,
@@ -20,6 +20,28 @@ pub enum PrimitiveKind {
     F64,
     Char,
     Bool,
+}
+
+impl core::fmt::Display for PrimitiveKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PrimitiveKind::Unit => write!(f, "()"),
+            PrimitiveKind::U8 => write!(f, "u8"),
+            PrimitiveKind::U16 => write!(f, "u16"),
+            PrimitiveKind::U32 => write!(f, "u32"),
+            PrimitiveKind::U64 => write!(f, "u64"),
+            PrimitiveKind::USize => write!(f, "usize"),
+            PrimitiveKind::I8 => write!(f, "i8"),
+            PrimitiveKind::I16 => write!(f, "i16"),
+            PrimitiveKind::I32 => write!(f, "i32"),
+            PrimitiveKind::I64 => write!(f, "i64"),
+            PrimitiveKind::ISize => write!(f, "isize"),
+            PrimitiveKind::F32 => write!(f, "f32"),
+            PrimitiveKind::F64 => write!(f, "f64"),
+            PrimitiveKind::Char => write!(f, "char"),
+            PrimitiveKind::Bool => write!(f, "bool"),
+        }
+    }
 }
 
 impl PrimitiveKind {

@@ -305,6 +305,7 @@ impl<'source> Parser<'source> {
             let ty = self.parse_type();
 
             if self.expect_peek("semicolon or close bracket").kind == TokenKind::Semicolon {
+                self.expect_next_to_be(TokenKind::Semicolon);
                 let length = self.parse_literal();
 
                 if length.kind != LiteralKind::Integer {

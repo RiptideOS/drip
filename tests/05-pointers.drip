@@ -1,11 +1,11 @@
 fn main() {
-    let a = 1;
+    let num = 1;
 
-    modify(&a);
+    modify(&num);
     
-    println("{}", a);
+    println("{}", num);
 }
 
 fn modify(ptr: *i32) {
-    *ptr += 1;
+    *ptr = 2;
 }
