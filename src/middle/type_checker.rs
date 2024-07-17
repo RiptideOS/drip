@@ -16,8 +16,8 @@ use crate::{
 
 use super::{
     hir::{
-        HirBlock, HirExpression, HirExpressionKind, HirFunctionDefinition, HirFunctionParameter,
-        HirLiteral, HirLocal, HirLocalKind, HirModule, HirStatement,
+        AssignmentKind, HirBlock, HirExpression, HirExpressionKind, HirFunctionDefinition,
+        HirFunctionParameter, HirLiteral, HirLocal, HirLocalKind, HirModule, HirStatement,
     },
     primitive::PrimitiveKind,
     resolve::{DefinitionId, ModuleResolutionMap, ValueDefinitionKind},
@@ -597,7 +597,10 @@ impl<'module> TypeChecker<'module> {
                                 &format!("Primitive type {unique_type} cannot be dereferenced"),
                             ),
                             UniqueType::Pointer(inner_type) =>  self.type_table.insert_if_absent(*inner_type.clone()),
-                            UniqueType::Slice(inner_type) => self.type_table.insert_if_absent(*inner_type.clone()),
+                            UniqueType::Slice(_) => self.report_error(
+                                expression.span,
+                                &format!("Slice type {unique_type} cannot be dereferenced"),
+                            ),
                             UniqueType::Str => self.report_error(
                                 expression.span,
                                 &format!("Type {unique_type} cannot be dereferenced"),
@@ -748,27 +751,7 @@ impl<'module> TypeChecker<'module> {
                     },
                 }
             }
-            ExpressionKind::Assignment { lhs, rhs } => {
-                let rhs = self.type_check_expression(rhs);
-                let lhs = self.type_check_expression(lhs);
-
-                // if lhs.ty != rhs.ty {
-                //     self.report_assignment_type_mismatch();
-                // }
-
-                // We have to make sure that:
-                //   1) The lhs supports assignment (MUST be a local identifier
-                //      (reassigns the value of the identifier), a dereference of a
-                //      pointer type, (dereferences the pointer and reassigns the
-                //      value), or a field access (dereferences the field and
-                //      reassigns the value))
-                //   2) Both sides are the same type (if lhs is an
-                //      identifier/field access, it must be the same type as the rhs.
-                //      if the lhs is a pointer deref, the pointer type must be the
-                //      same as the rhs)
-
-                todo!()
-            }
+            ExpressionKind::Assignment { lhs, rhs } => self.type_check_assignment(lhs, rhs),
             ExpressionKind::OperatorAssignment { operator, lhs, rhs } => {
                 let rhs = self.type_check_expression(rhs);
                 let lhs = self.type_check_expression(lhs);
@@ -790,10 +773,12 @@ impl<'module> TypeChecker<'module> {
 
                 todo!("Type check assignment with operator")
             }
+            // TODO: make sure we are inside a loop
             ExpressionKind::Break => HirExpression {
                 ty: self.type_table.get_primitive(PrimitiveKind::Unit),
                 kind: HirExpressionKind::Break,
             },
+            // TODO: make sure we are inside a loop
             ExpressionKind::Continue => HirExpression {
                 ty: self.type_table.get_primitive(PrimitiveKind::Unit),
                 kind: HirExpressionKind::Continue,
@@ -813,6 +798,105 @@ impl<'module> TypeChecker<'module> {
                     ty: self.type_table.get_primitive(PrimitiveKind::Unit),
                     kind: HirExpressionKind::Return(result.map(Box::new)),
                 }
+            }
+        }
+    }
+
+    fn type_check_assignment(&mut self, lhs: &Expression, rhs: &Expression) -> HirExpression {
+        let span = Span::new(lhs.span.start, rhs.span.end);
+        let lhs = self.type_check_expression(lhs);
+        let rhs = self.type_check_expression(rhs);
+
+        // We have to make sure that:
+        //   1) The lhs supports assignment (MUST be a local identifier
+        //      (reassigns the value of the identifier), a dereference of a
+        //      pointer type, (dereferences the pointer and reassigns the
+        //      value), or a field access (dereferences the field and
+        //      reassigns the value))
+        //   2) Both sides are the same type (if lhs is an
+        //      identifier/field access, it must be the same type as the rhs.
+        //      if the lhs is a pointer deref, the pointer type must be the
+        //      same as the rhs)
+
+        match lhs.kind {
+            HirExpressionKind::LocalDefinition(_) => {
+                if lhs.ty != rhs.ty {
+                    let lhs = self.type_table.get(lhs.ty);
+                    let rhs = self.type_table.get(rhs.ty);
+
+                    self.report_error(span, &format!("Left and right side of assignment expression have incompatible types. Cannot assign type {rhs} to variable of type {lhs}."));
+                }
+
+                HirExpression {
+                    ty: self.type_table.get_primitive(PrimitiveKind::Unit),
+                    kind: HirExpressionKind::Assignment {
+                        kind: AssignmentKind::Local,
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
+                    },
+                }
+            }
+            HirExpressionKind::Unary { operator, .. } => match operator {
+                UnaryOperatorKind::Deref => {
+                    // Type of the LHS will be the dereferenced type
+                    if lhs.ty != rhs.ty {
+                        let lhs = self.type_table.get(lhs.ty);
+                        let rhs = self.type_table.get(rhs.ty);
+
+                        self.report_error(span, &format!("Left and right side of assignment expression have incompatible types. Cannot assign type {rhs} to dereferenced type {lhs}."));
+                    }
+
+                    HirExpression {
+                        ty: self.type_table.get_primitive(PrimitiveKind::Unit),
+                        kind: HirExpressionKind::Assignment {
+                            kind: AssignmentKind::Deref,
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                        },
+                    }
+                }
+                _ => self.report_error(
+                    span,
+                    &format!("Cannot assign a value to the result of a `{operator} operation"),
+                ),
+            },
+            HirExpressionKind::Literal(_) => {
+                self.report_error(span, "Cannot reassign the value of a literal")
+            }
+            HirExpressionKind::Definition(_) => {
+                self.report_error(span, "Cannot reassign the value of a non-local definition")
+            }
+            HirExpressionKind::Block(_) => {
+                self.report_error(span, "Cannot assign a value to a block expression")
+            }
+            HirExpressionKind::FunctionCall { .. } => {
+                self.report_error(span, "Cannot assign a value to a function call expression")
+            }
+            HirExpressionKind::Binary { .. } => self.report_error(
+                span,
+                "Cannot assign a value to the result of a binary expression",
+            ),
+            HirExpressionKind::Cast { .. } => self.report_error(
+                span,
+                "Cannot assign a value to the result of a cast expression",
+            ),
+            HirExpressionKind::If { .. } => {
+                self.report_error(span, "Cannot assign a value to an if expression")
+            }
+            HirExpressionKind::While { .. } => {
+                self.report_error(span, "Cannot assign a value to an while expression")
+            }
+            HirExpressionKind::Assignment { .. } => {
+                unreachable!("Assignment expressions cannot be the left hand side of other assignment expressions")
+            }
+            HirExpressionKind::Break => {
+                self.report_error(span, "Cannot assign a value to a break expression")
+            }
+            HirExpressionKind::Continue => {
+                self.report_error(span, "Cannot assign a value to a continue expression")
+            }
+            HirExpressionKind::Return(_) => {
+                self.report_error(span, "Cannot assign a value to a return expression")
             }
         }
     }
