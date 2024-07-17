@@ -1,4 +1,4 @@
-use crate::frontend::lexer::Span;
+use crate::{frontend::lexer::Span, middle::primitive::PrimitiveKind};
 
 use super::{intern::InternedSymbol, SourceFile};
 
@@ -53,7 +53,14 @@ pub struct Type {
 
 #[derive(Debug)]
 pub enum TypeKind {
+    Primitive(PrimitiveKind),
     QualifiedIdentifier(QualifiedIdentifier),
+    Pointer(Box<Type>),
+    Slice(Box<Type>),
+    Str,
+    CStr,
+    Array { ty: Box<Type>, length: Box<Literal> },
+    Any,
 }
 
 #[derive(Debug)]
@@ -213,9 +220,22 @@ pub struct UnaryOperator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOperatorKind {
     Deref,      // *
+    AddressOf,  // &
     LogicalNot, // !
     BitwiseNot, // ~
     Negate,     // -
+}
+
+impl core::fmt::Display for UnaryOperatorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Deref => write!(f, "*"),
+            Self::AddressOf => write!(f, "&"),
+            Self::LogicalNot => write!(f, "!"),
+            Self::BitwiseNot => write!(f, "~"),
+            Self::Negate => write!(f, "-"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -226,7 +246,7 @@ pub struct Literal {
     pub symbol: InternedSymbol,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiteralKind {
     Boolean,    // true
     Byte,       // b'A'

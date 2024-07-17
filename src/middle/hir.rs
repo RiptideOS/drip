@@ -105,6 +105,7 @@ pub enum HirExpressionKind {
         block: Box<HirBlock>,
     },
     Assignment {
+        kind: AssignmentKind,
         lhs: Box<HirExpression>,
         rhs: Box<HirExpression>,
     },
@@ -112,6 +113,23 @@ pub enum HirExpressionKind {
     Continue,
     // Least priority
     Return(Option<Box<HirExpression>>),
+}
+
+#[derive(Debug)]
+pub enum AssignmentKind {
+    /// let a = 0;
+    /// a = 1;
+    Local,
+    /// let a = 0;
+    /// let b = &a;
+    /// *b = 1;
+    Deref,
+    /// let a = [0,2,3];
+    /// a[0] = 1;
+    Index,
+    /// let a = MyStruct { some_field: 0 };
+    /// a.some_field = 1;
+    Field,
 }
 
 #[derive(Debug)]

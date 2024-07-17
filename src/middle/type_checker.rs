@@ -6,7 +6,7 @@ use crate::{
     frontend::{
         ast::{
             Block, Expression, ExpressionKind, FunctionDefinition, Literal, LiteralKind, Local,
-            LocalKind, Module, NodeId, Statement, StatementKind, Type, TypeKind,
+            LocalKind, Module, NodeId, Statement, StatementKind, Type, TypeKind, UnaryOperatorKind,
         },
         intern::InternedSymbol,
         lexer::Span,
@@ -82,11 +82,13 @@ impl<'module> TypeChecker<'module> {
     }
 
     fn analyze_built_ins(&mut self) {
-        let println_id = self.type_table.insert_if_absent(UniqueType::Function {
-            parameters: vec![UniqueType::Primitive(PrimitiveKind::String)],
-            return_type: Box::new(UniqueType::Primitive(PrimitiveKind::Unit)),
-            is_variadic: true,
-        });
+        let println_id = self
+            .type_table
+            .insert_if_absent(UniqueType::FunctionPointer {
+                parameters: vec![UniqueType::Str],
+                return_type: Box::new(UniqueType::Primitive(PrimitiveKind::Unit)),
+                is_variadic: true,
+            });
 
         self.function_type_map
             .insert(DefinitionId::BUILT_IN_PRINTLN, println_id);
@@ -110,11 +112,13 @@ impl<'module> TypeChecker<'module> {
             .map(|ty| self.compute_unique_type(ty))
             .unwrap_or(UniqueType::Primitive(PrimitiveKind::Unit));
 
-        let type_id = self.type_table.insert_if_absent(UniqueType::Function {
-            parameters,
-            return_type: Box::new(return_type),
-            is_variadic: false,
-        });
+        let type_id = self
+            .type_table
+            .insert_if_absent(UniqueType::FunctionPointer {
+                parameters,
+                return_type: Box::new(return_type),
+                is_variadic: false,
+            });
 
         self.function_type_map.insert(
             DefinitionId::new_module(self.module.id, function.id),
@@ -125,6 +129,7 @@ impl<'module> TypeChecker<'module> {
     /// Computes the unique type for an AST type node
     fn compute_unique_type(&mut self, ty: &Type) -> UniqueType {
         match &ty.kind {
+            TypeKind::Primitive(kind) => UniqueType::Primitive(*kind),
             TypeKind::QualifiedIdentifier(qualified_ident) => {
                 // We already resolved type names in the previous compilation
                 // step so all we need to do is look it up and turn it into a
@@ -137,12 +142,32 @@ impl<'module> TypeChecker<'module> {
                     .expect("Failed to retrieve type name resolution (this should never happen)");
 
                 match resolution {
-                    TypeNameResolution::Primitive(kind) => UniqueType::Primitive(*kind),
                     TypeNameResolution::Definition(_, _) => {
                         todo!("create unique types for user defined types")
                     }
                 }
             }
+            TypeKind::Pointer(ty) => UniqueType::Pointer(Box::new(self.compute_unique_type(ty))),
+            TypeKind::Slice(ty) => UniqueType::Slice(Box::new(self.compute_unique_type(ty))),
+            TypeKind::Str => UniqueType::Str,
+            TypeKind::CStr => UniqueType::CStr,
+            TypeKind::Array { ty, length } => {
+                let length: usize = match length.symbol.value().parse() {
+                    Ok(value) => value,
+                    Err(e) => match e.kind() {
+                        IntErrorKind::PosOverflow => {
+                            self.report_error(length.span, "Integer is too large for it's type")
+                        }
+                        _ => unreachable!(),
+                    },
+                };
+
+                UniqueType::Array {
+                    ty: Box::new(self.compute_unique_type(ty)),
+                    length,
+                }
+            }
+            TypeKind::Any => todo!(),
         }
     }
 
@@ -458,7 +483,7 @@ impl<'module> TypeChecker<'module> {
                     .get(checked_target.ty)
                     .expect("Function target type should exist in the type table");
 
-                let UniqueType::Function {
+                let UniqueType::FunctionPointer {
                     parameters,
                     return_type,
                     is_variadic,
@@ -556,16 +581,73 @@ impl<'module> TypeChecker<'module> {
                     .get(ty)
                     .expect("Unary expression type should exist in the type table");
 
-                let UniqueType::Primitive(kind) = unique_type else {
-                    self.report_error(
-                        expression.span,
-                        "Operators can only be applied to primitive types",
-                    )
-                };
+                let ty = match operator.kind {
+                    UnaryOperatorKind::Deref => {
+                        let unique_type = self
+                            .type_table
+                            .get(ty)
+                            .expect("Type of unary operand should exist in the type table");
 
-                if !kind.supports_unary_op(operator.kind) {
-                    self.report_error(expression.span, "Type does not support this operator")
-                }
+                        match unique_type {
+                            UniqueType::Primitive(_) => self.report_error(
+                                expression.span,
+                                "Primitive types cannot be dereferenced",
+                            ),
+                            UniqueType::Pointer(inner_type) =>  self.type_table.insert_if_absent(*inner_type.clone()),
+                            UniqueType::Slice(inner_type) => self.type_table.insert_if_absent(*inner_type.clone()),
+                            UniqueType::Str => self.report_error(
+                                expression.span,
+                                "Type `str` cannot be dereferenced",
+                            ),
+                            UniqueType::CStr => self.type_table.get_primitive(PrimitiveKind::I8),
+                            UniqueType::Array { ..} => self.report_error(
+                                expression.span,
+                                "Arrays cannot be dereferenced. Index the array or first cast an array pointer to a raw pointer type.",
+                            ),
+                            UniqueType::FunctionPointer {
+                          ..
+                            } => self.report_error(
+                                expression.span,
+                                "Function pointers cannot be dereferenced, only called. To read the bytes from a function definition, first cast it to a `*u8` pointer.",
+                            ),
+                            UniqueType::Any => self.report_error(
+                                expression.span,
+                                "`*any` pointers cannot be dereferenced directly. Cast it to a defined pointer type first.",
+                            ),
+                        }
+                    }
+                    UnaryOperatorKind::AddressOf => {
+                        let unique_type = self
+                            .type_table
+                            .get(ty)
+                            .expect("Type of unary operand should exist in the type table");
+
+                        self.type_table
+                            .insert_if_absent(UniqueType::Pointer(Box::new(unique_type.clone())))
+                    }
+                    UnaryOperatorKind::LogicalNot
+                    | UnaryOperatorKind::BitwiseNot
+                    | UnaryOperatorKind::Negate => {
+                        let UniqueType::Primitive(kind) = unique_type else {
+                            self.report_error(
+                                expression.span,
+                                &format!(
+                                    "The `{}` operator can only be applied to primitive types",
+                                    operator.kind
+                                ),
+                            )
+                        };
+
+                        if !kind.supports_unary_op(operator.kind) {
+                            self.report_error(
+                                expression.span,
+                                &format!("Type does not support the `{}` operator", operator.kind),
+                            )
+                        }
+
+                        ty
+                    }
+                };
 
                 HirExpression {
                     ty,
@@ -700,7 +782,7 @@ impl<'module> TypeChecker<'module> {
                 //      rhs type (does not require that both sides are
                 //      necessarily the same type)
 
-                todo!()
+                todo!("Type check assignment with operator")
             }
             ExpressionKind::Break => HirExpression {
                 ty: self.type_table.get_unit(),
@@ -790,7 +872,7 @@ impl<'module> TypeChecker<'module> {
                 let value = InternedSymbol::new(&value[1..value.len() - 1]);
 
                 (
-                    self.type_table.get_primitive(PrimitiveKind::String),
+                    self.type_table.insert_if_absent(UniqueType::Str),
                     HirLiteral::String(value),
                 )
             }
@@ -873,9 +955,18 @@ impl TypeTable {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UniqueType {
     Primitive(PrimitiveKind),
-    Function {
+    Pointer(Box<UniqueType>),
+    Slice(Box<UniqueType>),
+    Str,
+    CStr,
+    Array {
+        ty: Box<UniqueType>,
+        length: usize,
+    },
+    FunctionPointer {
         parameters: Vec<UniqueType>,
         return_type: Box<UniqueType>,
         is_variadic: bool,
     },
+    Any,
 }

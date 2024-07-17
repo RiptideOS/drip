@@ -9,8 +9,6 @@ use crate::frontend::{
     lexer::Span,
 };
 
-use super::primitive::PrimitiveKind;
-
 /// A map between AST identifier nodes and their definitions
 #[derive(Debug)]
 pub struct ModuleResolutionMap {
@@ -46,7 +44,6 @@ pub enum ValueDefinitionKind {
 /// A data structure to assist in traversing AST scopes within a specific
 /// namespace (values or types)
 pub enum TypeNameResolution {
-    Primitive(PrimitiveKind),
     Definition(TypeDefinitionKind, DefinitionId),
 }
 
@@ -248,15 +245,6 @@ impl<'module> Resolver<'module> {
 
                 // Case 1
                 if let [ident] = qualified_ident.segments.as_slice() {
-                    // Try and resolve it as a primitive
-                    if let Ok(kind) = ident.symbol.value().parse() {
-                        self.resolutions
-                            .type_name_resolutions
-                            .insert(qualified_ident.id, TypeNameResolution::Primitive(kind));
-
-                        return;
-                    }
-
                     // Resolve from the global scope
                     let Some(resolution) = self.type_scope_stack.get_global_binding(ident.symbol)
                     else {
@@ -271,6 +259,11 @@ impl<'module> Resolver<'module> {
                 // Case 2
                 todo!("Resolve type identifier by traversing qualified identifier segments")
             }
+            TypeKind::Pointer(ty) => self.resolve_type(ty),
+            TypeKind::Slice(ty) => self.resolve_type(ty),
+            TypeKind::Array { ty, .. } => self.resolve_type(ty),
+            // Nothing needs to be done to resolve these types
+            TypeKind::Primitive(_) | TypeKind::Str | TypeKind::CStr | TypeKind::Any => {}
         }
     }
 

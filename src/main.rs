@@ -20,6 +20,9 @@ pub struct Args {
 fn main() {
     let args = Args::parse();
 
+    let mut s = String::from("");
+    let m = s.as_mut_str().len();
+
     if args.source_files.is_empty() {
         Args::command()
             .error(ErrorKind::MissingRequiredArgument, "Missing source files!")

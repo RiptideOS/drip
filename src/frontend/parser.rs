@@ -49,13 +49,27 @@ impl<'source> Parser<'source> {
         module
     }
 
-    fn next_id(&mut self) -> NodeId {
+    fn create_node_id(&mut self) -> NodeId {
         let id = NodeId(self.next_node_id);
         self.next_node_id += 1;
         id
     }
 
-    fn report_fatal_error(&self, message: &str) -> ! {
+    fn report_fatal_error(&self, offending_span: Span, message: &str) -> ! {
+        eprintln!(
+            "{} ({}:{}:{})",
+            message,
+            self.lexer.source().origin,
+            self.lexer.source().row_for_position(offending_span.start),
+            self.lexer
+                .source()
+                .column_for_position(offending_span.start)
+        );
+        self.lexer.source().highlight_span(offending_span);
+        std::process::exit(1);
+    }
+
+    fn report_fatal_error_old(&self, message: &str) -> ! {
         eprintln!(
             "Fatal error reported in Parser ({}:{}:{}):",
             self.lexer.source().origin,
@@ -68,7 +82,7 @@ impl<'source> Parser<'source> {
 
     fn expect_peek(&mut self, expecting: &str) -> Token {
         let Some(token) = self.lexer.peek() else {
-            self.report_fatal_error(&format!("Expected {expecting} but reached end of file",))
+            self.report_fatal_error_old(&format!("Expected {expecting} but reached end of file",))
         };
 
         token
@@ -76,7 +90,7 @@ impl<'source> Parser<'source> {
 
     fn expect_next(&mut self, expecting: &str) -> Token {
         let Some(token) = self.lexer.next() else {
-            self.report_fatal_error(&format!("Expected {expecting} but reached end of file",))
+            self.report_fatal_error_old(&format!("Expected {expecting} but reached end of file",))
         };
 
         token
@@ -86,7 +100,7 @@ impl<'source> Parser<'source> {
         let token = self.expect_next(&format!("{kind:?}"));
 
         if token.kind != kind {
-            self.report_fatal_error(&format!(
+            self.report_fatal_error_old(&format!(
                 "Expected {:?} but found {:?} ({})",
                 kind,
                 token.kind,
@@ -103,14 +117,14 @@ impl<'source> Parser<'source> {
 
     fn parse_module_item(&mut self) -> ModuleItem {
         let Some(peeked) = self.lexer.peek() else {
-            self.report_fatal_error("Unexpected EOF while trying to parse module item")
+            self.report_fatal_error_old("Unexpected EOF while trying to parse module item")
         };
 
         match peeked.kind {
             TokenKind::Keyword(Keyword::Fn) => {
                 ModuleItem::FunctionDefinition(self.parse_function_definition())
             }
-            _ => self.report_fatal_error(&format!(
+            _ => self.report_fatal_error_old(&format!(
                 "Expected function definition in module but found: {} ({:?})",
                 self.lexer.source().value_of_span(peeked.span),
                 peeked.kind
@@ -126,7 +140,7 @@ impl<'source> Parser<'source> {
         let body = self.parse_block();
 
         FunctionDefinition {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: Span::new(fn_keyword.span.start, body.span.end),
             signature,
             body,
@@ -153,7 +167,7 @@ impl<'source> Parser<'source> {
         );
 
         FunctionSignature {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span,
             name,
             parameters,
@@ -166,7 +180,7 @@ impl<'source> Parser<'source> {
         let token = self.expect_next_to_be(TokenKind::Identifier);
 
         Identifier {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: token.span,
             symbol: InternedSymbol::new(self.lexer.source().value_of_span(token.span)),
         }
@@ -187,7 +201,7 @@ impl<'source> Parser<'source> {
         }
 
         QualifiedIdentifier {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: Span::new(
                 segments.first().unwrap().span.start,
                 segments.last().unwrap().span.end,
@@ -223,7 +237,7 @@ impl<'source> Parser<'source> {
         let close_paren = self.expect_next_to_be(TokenKind::CloseParen);
 
         FunctionParameterList {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: Span::new(open_paren.span.start, close_paren.span.end),
             parameters,
         }
@@ -236,19 +250,136 @@ impl<'source> Parser<'source> {
         let ty = self.parse_type();
 
         FunctionParameter {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: Span::new(name.span.start, ty.span.end),
             name,
             ty,
         }
     }
 
-    // i32
+    // type = "*" ( "any" | type )
+    //        | "[" type ( ";" INTEGER )?  "]"
+    //        | "fn" "(" ( type ( "," type )* )? ( "," "..." "[" type "]" ) ")" ( "->" type )?
+    //        | PRIMITIVE | "str" | "cstr"
+    //        | IDENTIFIER
     fn parse_type(&mut self) -> Type {
+        // Raw pointers and `any` pointers
+        if self
+            .expect_peek("asterisk, open bracket, fn keyword, or identifier")
+            .kind
+            == TokenKind::Asterisk
+        {
+            let asterisk = self.expect_next_to_be(TokenKind::Asterisk);
+
+            let maybe_any = self.expect_peek("open bracket or identifier");
+
+            if maybe_any.kind == TokenKind::Identifier
+                && self.lexer.source().value_of_span(maybe_any.span) == "any"
+            {
+                let any = self.expect_next_to_be(TokenKind::Identifier);
+
+                return Type {
+                    id: self.create_node_id(),
+                    span: Span::new(asterisk.span.start, any.span.end),
+                    kind: TypeKind::Any,
+                };
+            } else {
+                let ty = self.parse_type();
+
+                return Type {
+                    id: self.create_node_id(),
+                    span: Span::new(asterisk.span.start, ty.span.end),
+                    kind: TypeKind::Pointer(Box::new(ty)),
+                };
+            }
+        }
+
+        // Slices and Arrays
+
+        if self
+            .expect_peek(" open bracket, fn keyword, or identifier")
+            .kind
+            == TokenKind::OpenBracket
+        {
+            let open_bracket = self.expect_next_to_be(TokenKind::OpenBracket);
+            let ty = self.parse_type();
+
+            if self.expect_peek("semicolon or close bracket").kind == TokenKind::Semicolon {
+                let length = self.parse_literal();
+
+                if length.kind != LiteralKind::Integer {
+                    // TODO: allow constant expressions
+                    self.report_fatal_error(length.span, "Array length must be an integer literal")
+                }
+
+                let close_bracket = self.expect_next_to_be(TokenKind::CloseBracket);
+
+                return Type {
+                    id: self.create_node_id(),
+                    span: Span::new(open_bracket.span.start, close_bracket.span.end),
+                    kind: TypeKind::Array {
+                        ty: Box::new(ty),
+                        length: Box::new(length),
+                    },
+                };
+            }
+
+            let close_bracket = self.expect_next_to_be(TokenKind::CloseBracket);
+
+            return Type {
+                id: self.create_node_id(),
+                span: Span::new(open_bracket.span.start, close_bracket.span.end),
+                kind: TypeKind::Slice(Box::new(ty)),
+            };
+        }
+
+        if self.expect_peek("fn keyword or identifier").kind == TokenKind::Keyword(Keyword::Fn) {
+            todo!("Parse function pointer type")
+        }
+
+        // Primitives, string slices, and C strings
+        let maybe_ident = self.expect_peek("identifier");
+        if maybe_ident.kind == TokenKind::Identifier {
+            let value = self.lexer.source().value_of_span(maybe_ident.span);
+
+            if let Ok(kind) = value.parse() {
+                let token = self.expect_next_to_be(TokenKind::Identifier);
+
+                return Type {
+                    id: self.create_node_id(),
+                    span: token.span,
+                    kind: TypeKind::Primitive(kind),
+                };
+            }
+
+            match value {
+                "str" => {
+                    let token = self.expect_next_to_be(TokenKind::Identifier);
+
+                    return Type {
+                        id: self.create_node_id(),
+                        span: token.span,
+                        kind: TypeKind::Str,
+                    };
+                }
+                "cstr" => {
+                    let token = self.expect_next_to_be(TokenKind::Identifier);
+
+                    return Type {
+                        id: self.create_node_id(),
+                        span: token.span,
+                        kind: TypeKind::CStr,
+                    };
+                }
+                _ => {}
+            }
+        }
+
+        // Anything else must be a qualified identifier
         let qualified_identifier = self.parse_qualified_identifier();
 
         Type {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: qualified_identifier.span,
             kind: TypeKind::QualifiedIdentifier(qualified_identifier),
         }
@@ -279,7 +410,7 @@ impl<'source> Parser<'source> {
         let close_brace = self.expect_next_to_be(TokenKind::CloseBrace);
 
         Block {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: Span::new(open_brace.span.start, close_brace.span.end),
             statements,
         }
@@ -290,7 +421,7 @@ impl<'source> Parser<'source> {
             let local = self.parse_local();
 
             return Statement {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: local.span,
                 kind: StatementKind::Local(Box::new(local)),
             };
@@ -300,7 +431,7 @@ impl<'source> Parser<'source> {
             let semicolon = self.expect_next_to_be(TokenKind::Semicolon);
 
             return Statement {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: semicolon.span,
                 kind: StatementKind::Empty,
             };
@@ -322,7 +453,7 @@ impl<'source> Parser<'source> {
                         | ExpressionKind::While { .. }
                 )
             {
-                self.report_fatal_error(&format!(
+                self.report_fatal_error_old(&format!(
                     "Expected semicolon after statement but found {:?} ({})",
                     peeked.kind,
                     self.lexer.source().value_of_span(peeked.span),
@@ -330,7 +461,7 @@ impl<'source> Parser<'source> {
             }
 
             return Statement {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: expression.span,
                 kind: StatementKind::BareExpr(Box::new(expression)),
             };
@@ -339,7 +470,7 @@ impl<'source> Parser<'source> {
         let semicolon = self.expect_next_to_be(TokenKind::Semicolon);
 
         Statement {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: Span::new(expression.span.start, semicolon.span.end),
             kind: StatementKind::SemiExpr(Box::new(expression)),
         }
@@ -388,7 +519,7 @@ impl<'source> Parser<'source> {
         };
 
         Local {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span,
             is_mutable,
             name,
@@ -428,7 +559,7 @@ impl<'source> Parser<'source> {
             let break_keyword = self.expect_keyword(Keyword::Break);
 
             return Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: break_keyword.span,
                 kind: ExpressionKind::Break,
             };
@@ -438,7 +569,7 @@ impl<'source> Parser<'source> {
             let continue_keyword = self.expect_keyword(Keyword::Continue);
 
             return Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: continue_keyword.span,
                 kind: ExpressionKind::Continue,
             };
@@ -455,7 +586,7 @@ impl<'source> Parser<'source> {
                 .then(|| self.parse_assignment_expression());
 
             return Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: Span::new(
                     return_keyword.span.start,
                     expression
@@ -489,7 +620,7 @@ impl<'source> Parser<'source> {
             // that fact
             expression = if let Some(operator) = operator {
                 Expression {
-                    id: self.next_id(),
+                    id: self.create_node_id(),
                     span,
                     kind: ExpressionKind::OperatorAssignment {
                         operator,
@@ -499,7 +630,7 @@ impl<'source> Parser<'source> {
                 }
             } else {
                 Expression {
-                    id: self.next_id(),
+                    id: self.create_node_id(),
                     span,
                     kind: ExpressionKind::Assignment {
                         lhs: Box::new(expression),
@@ -540,12 +671,12 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_logical_and_expression();
 
             expression = Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
                     operator: BinaryOperator {
-                        id: self.next_id(),
+                        id: self.create_node_id(),
                         span: operator.span,
                         kind: BinaryOperatorKind::LogicalOr,
                     },
@@ -565,12 +696,12 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_comparison_expression();
 
             expression = Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
                     operator: BinaryOperator {
-                        id: self.next_id(),
+                        id: self.create_node_id(),
                         span: operator.span,
                         kind: BinaryOperatorKind::LogicalAnd,
                     },
@@ -594,7 +725,7 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_bitwise_or_expression();
 
             expression = Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
@@ -611,7 +742,7 @@ impl<'source> Parser<'source> {
         let operator = self.expect_next("comparison operator");
 
         BinaryOperator {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: operator.span,
             kind: match operator.kind {
                 TokenKind::NotEquals => BinaryOperatorKind::NotEquals,
@@ -633,12 +764,12 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_bitwise_xor_expression();
 
             expression = Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
                     operator: BinaryOperator {
-                        id: self.next_id(),
+                        id: self.create_node_id(),
                         span: operator.span,
                         kind: BinaryOperatorKind::BitwiseOr,
                     },
@@ -658,12 +789,12 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_bitwise_and_expression();
 
             expression = Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
                     operator: BinaryOperator {
-                        id: self.next_id(),
+                        id: self.create_node_id(),
                         span: operator.span,
                         kind: BinaryOperatorKind::BitwiseXor,
                     },
@@ -678,17 +809,17 @@ impl<'source> Parser<'source> {
     fn parse_bitwise_and_expression(&mut self) -> Expression {
         let mut expression = self.parse_bit_shift_expression();
 
-        while self.expect_peek("bitwise and operator or expression").kind == TokenKind::BitwiseAnd {
-            let operator = self.expect_next_to_be(TokenKind::BitwiseAnd);
+        while self.expect_peek("bitwise and operator or expression").kind == TokenKind::Ampersand {
+            let operator = self.expect_next_to_be(TokenKind::Ampersand);
             let rhs = self.parse_bit_shift_expression();
 
             expression = Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
                     operator: BinaryOperator {
-                        id: self.next_id(),
+                        id: self.create_node_id(),
                         span: operator.span,
                         kind: BinaryOperatorKind::BitwiseAnd,
                     },
@@ -712,7 +843,7 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_term_expression();
 
             expression = Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
@@ -729,7 +860,7 @@ impl<'source> Parser<'source> {
         let operator = self.expect_next("bit shift operator");
 
         BinaryOperator {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: operator.span,
             kind: match operator.kind {
                 TokenKind::ShiftLeft => BinaryOperatorKind::ShiftLeft,
@@ -751,7 +882,7 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_factor_expression();
 
             expression = Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
@@ -768,7 +899,7 @@ impl<'source> Parser<'source> {
         let operator = self.expect_next("term operator");
 
         BinaryOperator {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: operator.span,
             kind: match operator.kind {
                 TokenKind::Plus => BinaryOperatorKind::Add,
@@ -790,7 +921,7 @@ impl<'source> Parser<'source> {
             let rhs = self.parse_cast_expression();
 
             expression = Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: Span::new(expression.span.start, rhs.span.end),
                 kind: ExpressionKind::Binary {
                     lhs: Box::new(expression),
@@ -807,7 +938,7 @@ impl<'source> Parser<'source> {
         let operator = self.expect_next("factor operator");
 
         BinaryOperator {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: operator.span,
             kind: match operator.kind {
                 TokenKind::Asterisk => BinaryOperatorKind::Multiply,
@@ -826,7 +957,7 @@ impl<'source> Parser<'source> {
             let ty = self.parse_type();
 
             expression = Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: Span::new(expression.span.start, ty.span.end),
                 kind: ExpressionKind::Cast {
                     expression: Box::new(expression),
@@ -848,7 +979,7 @@ impl<'source> Parser<'source> {
             let operand = self.parse_unary_expression();
 
             return Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: Span::new(operator.span.start, operand.span.end),
                 kind: ExpressionKind::Unary {
                     operator,
@@ -864,14 +995,15 @@ impl<'source> Parser<'source> {
         let operator = self.expect_next("unary operator");
 
         UnaryOperator {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: operator.span,
             kind: match operator.kind {
                 TokenKind::Asterisk => UnaryOperatorKind::Deref,
+                TokenKind::Ampersand => UnaryOperatorKind::AddressOf,
                 TokenKind::Bang => UnaryOperatorKind::LogicalNot,
                 TokenKind::Tilde => UnaryOperatorKind::BitwiseNot,
                 TokenKind::Minus => UnaryOperatorKind::Negate,
-                _ => unreachable!(),
+                _ => unreachable!("Unexpected unary operator"),
             },
         }
     }
@@ -887,7 +1019,7 @@ impl<'source> Parser<'source> {
             let arguments = self.parse_function_call_arguments();
 
             expression = Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: Span::new(expression.span.start, arguments.span.end),
                 kind: ExpressionKind::FunctionCall {
                     target: Box::new(expression),
@@ -929,7 +1061,7 @@ impl<'source> Parser<'source> {
         let close_paren = self.expect_next_to_be(TokenKind::CloseParen);
 
         FunctionCallArgumentList {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: Span::new(open_paren.span.start, close_paren.span.end),
             arguments,
         }
@@ -967,7 +1099,7 @@ impl<'source> Parser<'source> {
         let block = self.parse_block();
 
         Expression {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: block.span,
             kind: ExpressionKind::Block(Box::new(block)),
         }
@@ -996,7 +1128,7 @@ impl<'source> Parser<'source> {
                 return self.parse_block_expression();
             }
 
-            self.report_fatal_error(&format!(
+            self.report_fatal_error_old(&format!(
                 "Expected if expression or block after else keyword but found {:?} ({})",
                 peeked.kind,
                 self.lexer.source().value_of_span(peeked.span)
@@ -1004,7 +1136,7 @@ impl<'source> Parser<'source> {
         });
 
         Expression {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: Span::new(
                 if_keyword.span.start,
                 negative
@@ -1027,7 +1159,7 @@ impl<'source> Parser<'source> {
         let block = self.parse_block();
 
         Expression {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: Span::new(while_keyword.span.start, block.span.end),
             kind: ExpressionKind::While {
                 condition: Box::new(condition),
@@ -1046,7 +1178,7 @@ impl<'source> Parser<'source> {
             let qualified_identifier = self.parse_qualified_identifier();
 
             return Expression {
-                id: self.next_id(),
+                id: self.create_node_id(),
                 span: qualified_identifier.span,
                 kind: ExpressionKind::QualifiedIdentifier(Box::new(qualified_identifier)),
             };
@@ -1061,7 +1193,7 @@ impl<'source> Parser<'source> {
         let literal = self.parse_literal();
 
         Expression {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: literal.span,
             kind: ExpressionKind::Literal(Box::new(literal)),
         }
@@ -1073,7 +1205,7 @@ impl<'source> Parser<'source> {
         let close_paren = self.expect_next_to_be(TokenKind::CloseParen);
 
         Expression {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: Span::new(open_paren.span.start, close_paren.span.end),
             kind: ExpressionKind::Grouping(Box::new(expression)),
         }
@@ -1091,7 +1223,7 @@ impl<'source> Parser<'source> {
             TokenKind::StringLiteral => LiteralKind::String,
             TokenKind::ByteStringLiteral => LiteralKind::ByteString,
             TokenKind::CStringLiteral => LiteralKind::CString,
-            k => self.report_fatal_error(&format!(
+            k => self.report_fatal_error_old(&format!(
                 "Expected literal but found {:?} ({})",
                 k,
                 self.lexer.source().value_of_span(token.span)
@@ -1099,7 +1231,7 @@ impl<'source> Parser<'source> {
         };
 
         Literal {
-            id: self.next_id(),
+            id: self.create_node_id(),
             span: token.span,
             kind,
             symbol: InternedSymbol::new(self.lexer.source().value_of_span(token.span)),

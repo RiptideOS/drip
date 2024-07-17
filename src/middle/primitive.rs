@@ -10,20 +10,16 @@ pub enum PrimitiveKind {
     U16,
     U32,
     U64,
+    USize,
     I8,
     I16,
     I32,
     I64,
+    ISize,
     F32,
     F64,
     Char,
     Bool,
-    #[strum(serialize = "str")]
-    String,
-    #[strum(serialize = "cstr")]
-    CString,
-    #[strum(serialize = "bytes")]
-    ByteString,
 }
 
 impl PrimitiveKind {
@@ -34,10 +30,12 @@ impl PrimitiveKind {
             | PrimitiveKind::U16
             | PrimitiveKind::U32
             | PrimitiveKind::U64
+            | PrimitiveKind::USize
             | PrimitiveKind::I8
             | PrimitiveKind::I16
             | PrimitiveKind::I32
-            | PrimitiveKind::I64 => match kind {
+            | PrimitiveKind::I64
+            | PrimitiveKind::ISize => match kind {
                 BinaryOperatorKind::Add
                 | BinaryOperatorKind::Subtract
                 | BinaryOperatorKind::Multiply
@@ -120,10 +118,7 @@ impl PrimitiveKind {
                 | BinaryOperatorKind::ShiftRight => false,
             },
             // No ops supported
-            PrimitiveKind::Unit
-            | PrimitiveKind::String
-            | PrimitiveKind::CString
-            | PrimitiveKind::ByteString => false,
+            PrimitiveKind::Unit => false,
         }
     }
 
@@ -133,32 +128,42 @@ impl PrimitiveKind {
             | PrimitiveKind::U8
             | PrimitiveKind::U16
             | PrimitiveKind::U32
-            | PrimitiveKind::U64 => match kind {
-                UnaryOperatorKind::BitwiseNot => true,
+            | PrimitiveKind::U64
+            | PrimitiveKind::USize => match kind {
+                UnaryOperatorKind::BitwiseNot | UnaryOperatorKind::AddressOf => true,
                 UnaryOperatorKind::Deref
                 | UnaryOperatorKind::LogicalNot
                 | UnaryOperatorKind::Negate => false,
             },
-            PrimitiveKind::I8 | PrimitiveKind::I16 | PrimitiveKind::I32 | PrimitiveKind::I64 => {
-                match kind {
-                    UnaryOperatorKind::BitwiseNot | UnaryOperatorKind::Negate => true,
-                    UnaryOperatorKind::Deref | UnaryOperatorKind::LogicalNot => false,
-                }
-            }
+            PrimitiveKind::I8
+            | PrimitiveKind::I16
+            | PrimitiveKind::I32
+            | PrimitiveKind::I64
+            | PrimitiveKind::ISize => match kind {
+                UnaryOperatorKind::BitwiseNot
+                | UnaryOperatorKind::Negate
+                | UnaryOperatorKind::AddressOf => true,
+                UnaryOperatorKind::Deref | UnaryOperatorKind::LogicalNot => false,
+            },
             PrimitiveKind::F32 | PrimitiveKind::F64 => match kind {
-                UnaryOperatorKind::BitwiseNot | UnaryOperatorKind::Negate => true,
+                UnaryOperatorKind::BitwiseNot
+                | UnaryOperatorKind::Negate
+                | UnaryOperatorKind::AddressOf => true,
                 UnaryOperatorKind::Deref | UnaryOperatorKind::LogicalNot => false,
             },
             PrimitiveKind::Bool => match kind {
-                UnaryOperatorKind::LogicalNot => true,
+                UnaryOperatorKind::LogicalNot | UnaryOperatorKind::AddressOf => true,
                 UnaryOperatorKind::Deref
                 | UnaryOperatorKind::BitwiseNot
                 | UnaryOperatorKind::Negate => false,
             },
-            PrimitiveKind::Char
-            | PrimitiveKind::String
-            | PrimitiveKind::CString
-            | PrimitiveKind::ByteString => false,
+            PrimitiveKind::Char => match kind {
+                UnaryOperatorKind::AddressOf => true,
+                UnaryOperatorKind::Deref
+                | UnaryOperatorKind::LogicalNot
+                | UnaryOperatorKind::BitwiseNot
+                | UnaryOperatorKind::Negate => false,
+            },
         }
     }
 
@@ -168,44 +173,42 @@ impl PrimitiveKind {
             | PrimitiveKind::U16
             | PrimitiveKind::U32
             | PrimitiveKind::U64
+            | PrimitiveKind::USize
             | PrimitiveKind::I8
             | PrimitiveKind::I16
             | PrimitiveKind::I32
-            | PrimitiveKind::I64 => match target {
+            | PrimitiveKind::I64
+            | PrimitiveKind::ISize => match target {
                 PrimitiveKind::U8
                 | PrimitiveKind::U16
                 | PrimitiveKind::U32
                 | PrimitiveKind::U64
+                | PrimitiveKind::USize
                 | PrimitiveKind::I8
                 | PrimitiveKind::I16
                 | PrimitiveKind::I32
                 | PrimitiveKind::I64
+                | PrimitiveKind::ISize
                 | PrimitiveKind::F32
                 | PrimitiveKind::F64
                 | PrimitiveKind::Char
                 | PrimitiveKind::Bool => true,
-                PrimitiveKind::Unit
-                | PrimitiveKind::String
-                | PrimitiveKind::CString
-                | PrimitiveKind::ByteString => false,
+                PrimitiveKind::Unit => false,
             },
             PrimitiveKind::F32 | PrimitiveKind::F64 => match target {
                 PrimitiveKind::U8
                 | PrimitiveKind::U16
                 | PrimitiveKind::U32
                 | PrimitiveKind::U64
+                | PrimitiveKind::USize
                 | PrimitiveKind::I8
                 | PrimitiveKind::I16
                 | PrimitiveKind::I32
                 | PrimitiveKind::I64
+                | PrimitiveKind::ISize
                 | PrimitiveKind::F32
                 | PrimitiveKind::F64 => true,
-                PrimitiveKind::Unit
-                | PrimitiveKind::Char
-                | PrimitiveKind::Bool
-                | PrimitiveKind::String
-                | PrimitiveKind::CString
-                | PrimitiveKind::ByteString => false,
+                PrimitiveKind::Unit | PrimitiveKind::Char | PrimitiveKind::Bool => false,
             },
             PrimitiveKind::Char => match target {
                 PrimitiveKind::U8
@@ -214,39 +217,33 @@ impl PrimitiveKind {
                 | PrimitiveKind::Char => true,
                 PrimitiveKind::Unit
                 | PrimitiveKind::U64
+                | PrimitiveKind::USize
                 | PrimitiveKind::I8
                 | PrimitiveKind::I16
                 | PrimitiveKind::I32
+                | PrimitiveKind::ISize
                 | PrimitiveKind::I64
                 | PrimitiveKind::F32
                 | PrimitiveKind::F64
-                | PrimitiveKind::Bool
-                | PrimitiveKind::String
-                | PrimitiveKind::CString
-                | PrimitiveKind::ByteString => false,
+                | PrimitiveKind::Bool => false,
             },
             PrimitiveKind::Bool => match target {
                 PrimitiveKind::U8
                 | PrimitiveKind::U16
                 | PrimitiveKind::U32
                 | PrimitiveKind::U64
+                | PrimitiveKind::USize
                 | PrimitiveKind::I8
                 | PrimitiveKind::I16
                 | PrimitiveKind::I32
                 | PrimitiveKind::I64
+                | PrimitiveKind::ISize
                 | PrimitiveKind::F32
                 | PrimitiveKind::F64
                 | PrimitiveKind::Bool => true,
-                PrimitiveKind::Unit
-                | PrimitiveKind::Char
-                | PrimitiveKind::String
-                | PrimitiveKind::CString
-                | PrimitiveKind::ByteString => false,
+                PrimitiveKind::Unit | PrimitiveKind::Char => false,
             },
-            PrimitiveKind::Unit
-            | PrimitiveKind::String
-            | PrimitiveKind::CString
-            | PrimitiveKind::ByteString => false,
+            PrimitiveKind::Unit => false,
         }
     }
 }

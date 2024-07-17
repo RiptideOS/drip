@@ -1,0 +1,11 @@
+fn main() {
+    let a = 1;
+
+    modify(&a);
+    
+    println("{}", a);
+}
+
+fn modify(ptr: *i32) {
+    *ptr += 1;
+}
