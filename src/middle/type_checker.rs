@@ -1,3 +1,26 @@
+//! Drip Type Checker
+//!
+//! This typechecking algorithm is implemented in 2 passes to allow deep type inference:
+//!
+//! 1. Traverse the AST and mark each node with either a concrete type (if
+//!     possible) or a non-specific integer/float type (will be attempted to be
+//!     inferred later). If we find obvious type mismatches, then we raise an error.
+//!     Variable bindings are terminators for type inference, meaning that we can
+//!     always either infer the entire type of the right side of a let binding and
+//!     traverse back down the tree to assign concrete types, or the entire right
+//!     side of the binding is ambiguous and will need to be inferred in the next
+//!     step.
+//! 2. For each variable binding left without a concrete type, traverse the
+//!     remainder of its scope and find the first usage of the binding where the
+//!     concrete type can be inferred. If we reach the end of the scope without
+//!     finding a usage where the type can be inferred, the type is coerced to the
+//!     default integer type (i32) for ambiguous integer types or the default float
+//!     type (f64) for ambiguous floating point types. During this process, if the
+//!     ambiguous binding is used in more than place with mismatching concrete types,
+//!     then we should report an error.
+//! 
+//! This algorithm can be later amended to perform more extensive inference for generics
+
 use std::{collections::BTreeMap, num::IntErrorKind};
 
 use strum::IntoEnumIterator;
