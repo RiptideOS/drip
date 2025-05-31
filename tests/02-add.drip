@@ -1,7 +1,20 @@
 fn main() {
-    println("Result: {}", add(1, 2));
+    let b = 2;
+    let one = {
+        let a = -1;
+        a + b
+    };
+    println("Result: {}", add(one + 1 as i64, 2));
 }
 
-fn add(a: i32, b: i32) -> i32 {
-    a + b
+fn add(a: i64, b: i64) -> i64 {
+    a + b + 1
+}
+
+fn max(a: i64, b: i64) -> i64 {
+    if a > b {
+        a
+    } else {
+        b
+    }
 }

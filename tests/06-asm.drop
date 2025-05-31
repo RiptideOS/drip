@@ -1,0 +1,27 @@
+fn main() {
+    println("Hello, world!");
+    syscall1(60, 0); // Exit
+}
+
+asm {
+global some_label:
+    mov rax, {num}
+    mov rdx, {a}
+    syscall
+    mov {res}, rax
+.some_inner_label
+    ret
+}
+
+fn syscall1(num: i64, a: i64) -> i64 {
+    let res: i64;
+
+    asm {
+        mov rax, {num}
+        mov rdx, {a}
+        syscall
+        mov {res}, rax
+    }
+
+    res
+}

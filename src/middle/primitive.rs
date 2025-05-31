@@ -1,63 +1,79 @@
-use strum::{EnumIter, EnumString};
+use strum::{Display, EnumIter, EnumString};
 
 use crate::frontend::ast::{BinaryOperatorKind, UnaryOperatorKind};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 #[strum(serialize_all = "lowercase")]
 pub enum PrimitiveKind {
+    #[strum(serialize = "!")]
+    Never,
+    #[strum(serialize = "()")]
     Unit,
-    U8,
-    U16,
-    U32,
-    U64,
-    USize,
+    #[strum(to_string = "{0}")]
+    Int(IntKind),
+    #[strum(to_string = "{0}")]
+    UInt(UIntKind),
+    #[strum(to_string = "{0}")]
+    Float(FloatKind),
+    Bool,
+    Char,
+    Str,
+    CStr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, EnumIter)]
+#[strum(serialize_all = "lowercase")]
+pub enum IntKind {
     I8,
     I16,
     I32,
     I64,
     ISize,
-    F32,
-    F64,
-    Char,
-    Bool,
 }
 
-impl core::fmt::Display for PrimitiveKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PrimitiveKind::Unit => write!(f, "()"),
-            PrimitiveKind::U8 => write!(f, "u8"),
-            PrimitiveKind::U16 => write!(f, "u16"),
-            PrimitiveKind::U32 => write!(f, "u32"),
-            PrimitiveKind::U64 => write!(f, "u64"),
-            PrimitiveKind::USize => write!(f, "usize"),
-            PrimitiveKind::I8 => write!(f, "i8"),
-            PrimitiveKind::I16 => write!(f, "i16"),
-            PrimitiveKind::I32 => write!(f, "i32"),
-            PrimitiveKind::I64 => write!(f, "i64"),
-            PrimitiveKind::ISize => write!(f, "isize"),
-            PrimitiveKind::F32 => write!(f, "f32"),
-            PrimitiveKind::F64 => write!(f, "f64"),
-            PrimitiveKind::Char => write!(f, "char"),
-            PrimitiveKind::Bool => write!(f, "bool"),
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, EnumIter)]
+#[strum(serialize_all = "lowercase")]
+pub enum UIntKind {
+    U8,
+    U16,
+    U32,
+    U64,
+    USize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, EnumIter)]
+#[strum(serialize_all = "lowercase")]
+pub enum FloatKind {
+    F32,
+    F64,
 }
 
 impl PrimitiveKind {
+    pub const ALL: &[Self] = &[
+        Self::Never,
+        Self::Unit,
+        Self::Int(IntKind::I8),
+        Self::Int(IntKind::I16),
+        Self::Int(IntKind::I32),
+        Self::Int(IntKind::I64),
+        Self::Int(IntKind::ISize),
+        Self::UInt(UIntKind::U8),
+        Self::UInt(UIntKind::U16),
+        Self::UInt(UIntKind::U32),
+        Self::UInt(UIntKind::U64),
+        Self::UInt(UIntKind::USize),
+        Self::Float(FloatKind::F32),
+        Self::Float(FloatKind::F64),
+        Self::Bool,
+        Self::Char,
+        Self::Str,
+        Self::CStr,
+    ];
+
     pub fn supports_binary_op(&self, kind: BinaryOperatorKind) -> bool {
         match self {
             // All ops besides logical
-            PrimitiveKind::U8
-            | PrimitiveKind::U16
-            | PrimitiveKind::U32
-            | PrimitiveKind::U64
-            | PrimitiveKind::USize
-            | PrimitiveKind::I8
-            | PrimitiveKind::I16
-            | PrimitiveKind::I32
-            | PrimitiveKind::I64
-            | PrimitiveKind::ISize => match kind {
+            PrimitiveKind::UInt(_) | PrimitiveKind::Int(_) => match kind {
                 BinaryOperatorKind::Add
                 | BinaryOperatorKind::Subtract
                 | BinaryOperatorKind::Multiply
@@ -77,7 +93,7 @@ impl PrimitiveKind {
                 BinaryOperatorKind::LogicalAnd | BinaryOperatorKind::LogicalOr => false,
             },
             // No bitwise or logical ops
-            PrimitiveKind::F32 | PrimitiveKind::F64 => match kind {
+            PrimitiveKind::Float(_) => match kind {
                 BinaryOperatorKind::Add
                 | BinaryOperatorKind::Subtract
                 | BinaryOperatorKind::Multiply
@@ -140,34 +156,32 @@ impl PrimitiveKind {
                 | BinaryOperatorKind::ShiftRight => false,
             },
             // No ops supported
-            PrimitiveKind::Unit => false,
+            PrimitiveKind::Never
+            | PrimitiveKind::Unit
+            | PrimitiveKind::Str
+            | PrimitiveKind::CStr => false,
         }
     }
 
     pub fn supports_unary_op(&self, kind: UnaryOperatorKind) -> bool {
         match self {
-            PrimitiveKind::Unit
-            | PrimitiveKind::U8
-            | PrimitiveKind::U16
-            | PrimitiveKind::U32
-            | PrimitiveKind::U64
-            | PrimitiveKind::USize => match kind {
+            PrimitiveKind::Never
+            | PrimitiveKind::Unit
+            | PrimitiveKind::Str
+            | PrimitiveKind::CStr => false,
+            PrimitiveKind::UInt(_) => match kind {
                 UnaryOperatorKind::BitwiseNot | UnaryOperatorKind::AddressOf => true,
                 UnaryOperatorKind::Deref
                 | UnaryOperatorKind::LogicalNot
                 | UnaryOperatorKind::Negate => false,
             },
-            PrimitiveKind::I8
-            | PrimitiveKind::I16
-            | PrimitiveKind::I32
-            | PrimitiveKind::I64
-            | PrimitiveKind::ISize => match kind {
+            PrimitiveKind::Int(_) => match kind {
                 UnaryOperatorKind::BitwiseNot
                 | UnaryOperatorKind::Negate
                 | UnaryOperatorKind::AddressOf => true,
                 UnaryOperatorKind::Deref | UnaryOperatorKind::LogicalNot => false,
             },
-            PrimitiveKind::F32 | PrimitiveKind::F64 => match kind {
+            PrimitiveKind::Float(_) => match kind {
                 UnaryOperatorKind::BitwiseNot
                 | UnaryOperatorKind::Negate
                 | UnaryOperatorKind::AddressOf => true,
@@ -191,81 +205,53 @@ impl PrimitiveKind {
 
     pub fn can_be_cast_to(&self, target: Self) -> bool {
         match self {
-            PrimitiveKind::U8
-            | PrimitiveKind::U16
-            | PrimitiveKind::U32
-            | PrimitiveKind::U64
-            | PrimitiveKind::USize
-            | PrimitiveKind::I8
-            | PrimitiveKind::I16
-            | PrimitiveKind::I32
-            | PrimitiveKind::I64
-            | PrimitiveKind::ISize => match target {
-                PrimitiveKind::U8
-                | PrimitiveKind::U16
-                | PrimitiveKind::U32
-                | PrimitiveKind::U64
-                | PrimitiveKind::USize
-                | PrimitiveKind::I8
-                | PrimitiveKind::I16
-                | PrimitiveKind::I32
-                | PrimitiveKind::I64
-                | PrimitiveKind::ISize
-                | PrimitiveKind::F32
-                | PrimitiveKind::F64
+            PrimitiveKind::UInt(_) | PrimitiveKind::Int(_) => match target {
+                PrimitiveKind::UInt(_)
+                | PrimitiveKind::Int(_)
+                | PrimitiveKind::Float(_)
                 | PrimitiveKind::Char
                 | PrimitiveKind::Bool => true,
-                PrimitiveKind::Unit => false,
+                PrimitiveKind::Never
+                | PrimitiveKind::Unit
+                | PrimitiveKind::Str
+                | PrimitiveKind::CStr => false,
             },
-            PrimitiveKind::F32 | PrimitiveKind::F64 => match target {
-                PrimitiveKind::U8
-                | PrimitiveKind::U16
-                | PrimitiveKind::U32
-                | PrimitiveKind::U64
-                | PrimitiveKind::USize
-                | PrimitiveKind::I8
-                | PrimitiveKind::I16
-                | PrimitiveKind::I32
-                | PrimitiveKind::I64
-                | PrimitiveKind::ISize
-                | PrimitiveKind::F32
-                | PrimitiveKind::F64 => true,
-                PrimitiveKind::Unit | PrimitiveKind::Char | PrimitiveKind::Bool => false,
+            PrimitiveKind::Float(_) => match target {
+                PrimitiveKind::UInt(_) | PrimitiveKind::Int(_) | PrimitiveKind::Float(_) => true,
+                PrimitiveKind::Never
+                | PrimitiveKind::Unit
+                | PrimitiveKind::Char
+                | PrimitiveKind::Bool
+                | PrimitiveKind::Str
+                | PrimitiveKind::CStr => false,
             },
             PrimitiveKind::Char => match target {
-                PrimitiveKind::U8
-                | PrimitiveKind::U16
-                | PrimitiveKind::U32
+                PrimitiveKind::UInt(UIntKind::U8 | UIntKind::U16 | UIntKind::U32)
                 | PrimitiveKind::Char => true,
-                PrimitiveKind::Unit
-                | PrimitiveKind::U64
-                | PrimitiveKind::USize
-                | PrimitiveKind::I8
-                | PrimitiveKind::I16
-                | PrimitiveKind::I32
-                | PrimitiveKind::ISize
-                | PrimitiveKind::I64
-                | PrimitiveKind::F32
-                | PrimitiveKind::F64
-                | PrimitiveKind::Bool => false,
+                PrimitiveKind::Never
+                | PrimitiveKind::Unit
+                | PrimitiveKind::UInt(_)
+                | PrimitiveKind::Int(_)
+                | PrimitiveKind::Float(_)
+                | PrimitiveKind::Bool
+                | PrimitiveKind::Str
+                | PrimitiveKind::CStr => false,
             },
             PrimitiveKind::Bool => match target {
-                PrimitiveKind::U8
-                | PrimitiveKind::U16
-                | PrimitiveKind::U32
-                | PrimitiveKind::U64
-                | PrimitiveKind::USize
-                | PrimitiveKind::I8
-                | PrimitiveKind::I16
-                | PrimitiveKind::I32
-                | PrimitiveKind::I64
-                | PrimitiveKind::ISize
-                | PrimitiveKind::F32
-                | PrimitiveKind::F64
+                PrimitiveKind::UInt(_)
+                | PrimitiveKind::Int(_)
+                | PrimitiveKind::Float(_)
                 | PrimitiveKind::Bool => true,
-                PrimitiveKind::Unit | PrimitiveKind::Char => false,
+                PrimitiveKind::Never
+                | PrimitiveKind::Unit
+                | PrimitiveKind::Char
+                | PrimitiveKind::Str
+                | PrimitiveKind::CStr => false,
             },
-            PrimitiveKind::Unit => false,
+            PrimitiveKind::Never
+            | PrimitiveKind::Unit
+            | PrimitiveKind::Str
+            | PrimitiveKind::CStr => false,
         }
     }
 }

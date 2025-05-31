@@ -1,0 +1,113 @@
+// Polymorphic auto-tagged union type
+pub union Option<T> {
+    some: T,
+    none: (),
+}
+
+// ||            ||
+// || turns into ||
+// \/            \/
+
+pub struct Option<T> {
+    __tag: u8, // (0 | 1)
+    __data: #[untagged] union <anonymous> {
+        some: T,
+        none: (),
+    }
+}
+
+let a = b.c().d();
+
+pub fn Option<T>::unwrap(self) -> T {
+    match o {
+        (some: v) => v,
+        _ => panic!("called unwrap on `none` value")
+    }
+}
+
+pub fn Option<T>::unwrap_or(self, default: T) -> T {
+    match o {
+        (some: v) => v,
+        _ => default
+    }
+}
+
+pub fn Option<T: Default>::unwrap_or_default(self) -> T {
+    match o {
+        (some: v) => v,
+        _ => <T as Default>::default()
+    }
+}
+
+pub fn Option<T>::unwrap_or_else(self, f: fn() -> T) -> T {
+    match o {
+        (some: v) => v,
+        _ => f()
+    }
+}
+
+let o: Option<u8> = Option { some: 1 };
+
+// Access the internal tag of the union like this
+let tag: u8 = core::union::tag_of(o);
+
+// Match over the content of a tagged union like this
+match o {
+    (some: v) => {
+        // use some variant
+    }
+    _ => { // or `(none) => {` or `(none: ()) => {`
+        // use none variant
+    }
+}
+
+// Auto tagged union with a specifically sized tag type
+#[tag = u16]
+pub union Result<T, E> {
+    ok: T,
+    err: E,
+}
+
+let r = Result::<i32, String> { ok: 1 };
+
+// Similar pattern matching behavior
+match r {
+    (ok: v1) => {
+        // use ok variant
+    }
+    (err: v2) => {
+        // use err variant
+    }
+}
+
+// Bang field access operator (panics if union is of a different variant)
+let ok = r!.ok;
+
+// Safe field access operator (returns Option<T> where T is the type of the 
+// variant being accessed)
+let maybe_ok = r.ok;
+
+// Safe field access with a value as a fallback in the none case 
+// (Option::unwrap_or in rust)
+let ok_or_1 = r.ok ?: 1; 
+
+// Safe field access with the default value as a fallback in the none case
+// (Option::unwrap_or_default in rust)
+let ok_or_0 = r.ok ?: _; 
+
+// Does not contain an auto generated tag. Unsafe to directly access variants. 
+// Requires use of the "IKWID field access operator" (~>), and pattern matching 
+// is not possible
+#[untagged]
+pub union UntaggedResult<T, E> {
+    ok: T,
+    err: E,
+}
+
+let ur = UntaggedResult::<i32, String> { ok: 1 };
+
+// Safe interpretation of content without UB
+let ok = ur~>ok;
+
+// Unsafe reinterpetation of content with UB (likely null bytes for ptr and length but not guaranteed)
+let err = ur~>err;

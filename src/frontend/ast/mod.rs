@@ -1,16 +1,30 @@
-use crate::{frontend::lexer::Span, middle::primitive::PrimitiveKind};
+use super::{SourceFile, intern::InternedSymbol};
+use crate::frontend::lexer::Span;
 
-use super::{intern::InternedSymbol, SourceFile};
+pub mod visit;
 
 #[derive(Debug)]
 pub struct Module<'source> {
-    pub id: u32,
     pub source_file: &'source SourceFile,
-    pub function_definitions: Vec<FunctionDefinition>,
+    /// Top level items in the module (nested items are in the tree and not in
+    /// this list)
+    pub items: Vec<Item>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NodeId(pub u32);
+
+#[derive(Debug)]
+pub struct Item {
+    pub id: NodeId,
+    pub span: Span,
+    pub kind: ItemKind,
+}
+
+#[derive(Debug)]
+pub enum ItemKind {
+    FunctionDefinition(Box<FunctionDefinition>),
+}
 
 #[derive(Debug)]
 pub struct FunctionDefinition {
@@ -53,12 +67,9 @@ pub struct Type {
 
 #[derive(Debug)]
 pub enum TypeKind {
-    Primitive(PrimitiveKind),
     QualifiedIdentifier(QualifiedIdentifier),
     Pointer(Box<Type>),
     Slice(Box<Type>),
-    Str,
-    CStr,
     Array { ty: Box<Type>, length: Box<Literal> },
     Any,
 }
@@ -68,6 +79,14 @@ pub struct QualifiedIdentifier {
     pub id: NodeId,
     pub span: Span,
     pub segments: Vec<Identifier>,
+}
+
+impl QualifiedIdentifier {
+    pub fn last(&self) -> &Identifier {
+        self.segments
+            .last()
+            .expect("QualifiedIdentifier should always have at least one segment")
+    }
 }
 
 #[derive(Debug)]
@@ -164,7 +183,7 @@ pub enum ExpressionKind {
         rhs: Box<Expression>,
     },
     OperatorAssignment {
-        operator: AssignmentOperatorKind,
+        operator: AssignmentOperator,
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },
@@ -259,6 +278,13 @@ pub enum LiteralKind {
 }
 
 #[derive(Debug)]
+pub struct AssignmentOperator {
+    pub id: NodeId,
+    pub span: Span,
+    pub kind: AssignmentOperatorKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssignmentOperatorKind {
     Add,        // +=
     Subtract,   // -=

@@ -6,6 +6,13 @@ fn main() {
     println("{}", num);
 }
 
-fn modify(ptr: *i32) {
-    *ptr = 2;
+fn modify(ptr: *i32, optional: bool = true) {
+    let a = 1;
+    let b = &a;
+    
+    *b = 2;
+
+    let c = *b;
+
+    *ptr = c;
 }

@@ -3,7 +3,7 @@ use std::{
     str::Chars,
 };
 
-use itertools::{peek_nth, PeekNth};
+use itertools::{PeekNth, peek_nth};
 use once_cell::sync::Lazy;
 use strum::EnumString;
 
@@ -284,8 +284,7 @@ impl<'source> Lexer<'source> {
         while let Some(c) = self.chars.peek().copied() {
             if c == '\n' {
                 self.report_fatal_error(&format!(
-                    "Reached end of line while reading wrapped literal: {:?}",
-                    kind
+                    "Reached end of line while reading wrapped literal: {kind:?}",
                 ));
             }
 
@@ -308,8 +307,7 @@ impl<'source> Lexer<'source> {
         }
 
         self.report_fatal_error(&format!(
-            "Reached end of file while reading wrapped literal: {:?}",
-            kind
+            "Reached end of file while reading wrapped literal: {kind:?}",
         ))
     }
 

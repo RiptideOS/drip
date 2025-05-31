@@ -1,87 +1,77 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::frontend::{
-    ast::{
-        Block, Expression, ExpressionKind, FunctionDefinition, FunctionParameter, Local, LocalKind,
-        Module, NodeId, QualifiedIdentifier, Statement, StatementKind, Type, TypeKind,
+use super::{hir, primitive::PrimitiveKind};
+use crate::{
+    frontend::{
+        ast::{
+            self, Block, Expression, ExpressionKind, FunctionDefinition, FunctionParameter, Local,
+            Module, NodeId, Type, TypeKind,
+            visit::{self, Visitor},
+        },
+        intern::InternedSymbol,
+        lexer::Span,
     },
-    intern::InternedSymbol,
-    lexer::Span,
+    index::Index,
 };
-
-/// A map between AST identifier nodes and their definitions
-#[derive(Debug)]
-pub struct ModuleResolutionMap {
-    /// Maps the usage of value identifiers (variable names) to their point of
-    /// original definition
-    pub value_name_resolutions: BTreeMap<NodeId, ValueNameResolution>,
-    /// Maps the usage of type identifiers to their point of original definition
-    pub type_name_resolutions: BTreeMap<NodeId, TypeNameResolution>,
-}
-
-/// A resolved value name
-///
-/// Can be either a local variable binding, function parameter binding, or a user defined function
-#[derive(Debug, Clone)]
-pub enum ValueNameResolution {
-    Local(NodeId),
-    Parameter(NodeId),
-    Definition(ValueDefinitionKind, DefinitionId),
-}
-
-#[derive(Debug, Clone)]
-pub enum ValueDefinitionKind {
-    Function,
-    Constant,
-    Static,
-}
-
-/// A resolved type name
-///
-/// Can either be a built in primitive type name or a reference to a user
-/// defined type
-#[derive(Debug, Clone)]
-/// A data structure to assist in traversing AST scopes within a specific
-/// namespace (values or types)
-pub enum TypeNameResolution {
-    Definition(TypeDefinitionKind, DefinitionId),
-}
-
-#[derive(Debug, Clone)]
-pub enum TypeDefinitionKind {
-    Struct,
-    Enum,
-    Union,
-    Alias,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum DefinitionId {
-    BuiltIn { id: u32 },
-    Module { module_id: u32, node_id: NodeId },
-}
-
-impl DefinitionId {
-    pub const BUILT_IN_PRINTLN: Self = Self::BuiltIn { id: 0 };
-
-    pub fn new_module(module_id: u32, node_id: NodeId) -> Self {
-        Self::Module { module_id, node_id }
-    }
-}
 
 /// AST Module name resolver
 ///
 /// Traverses the AST for a module and creates a map from type and value names
 /// to their definitions within the source code.
 #[derive(Debug)]
-pub struct Resolver<'module> {
-    module: &'module Module<'module>,
-    value_scope_stack: ScopeStack<ValueNameResolution>,
-    type_scope_stack: ScopeStack<TypeNameResolution>,
-    resolutions: ModuleResolutionMap,
+pub struct Resolver {
+    /// A list of built-in function names which we allow resolutions for
+    builtin_primitives: BTreeMap<InternedSymbol, PrimitiveKind>,
+
+    /// A list of built-in function names which we allow resolutions for
+    builtin_functions: BTreeSet<InternedSymbol>,
+
+    // Used to keep track of the definitions that exist within the current
+    next_def_id: hir::LocalDefId,
+    // Maps the IDs of AST owners to the def IDs we've assign to them
+    node_to_def_id_map: BTreeMap<NodeId, hir::LocalDefId>,
+
+    // Maps names of definitions in the global scope to their resolutions
+    // TODO: scope these to the modules they are defined in with the module
+    // graph
+    global_value_scope: BTreeMap<InternedSymbol, hir::Resolution<NodeId>>,
+    global_type_scope: BTreeMap<InternedSymbol, hir::Resolution<NodeId>>,
+
+    // Maps name references to definitions
+    value_name_resolutions: BTreeMap<NodeId, hir::Resolution<NodeId>>,
+    type_name_resolutions: BTreeMap<NodeId, hir::Resolution<NodeId>>,
 }
 
-impl<'module> Resolver<'module> {
+/// The result of resolving everything in a module
+#[derive(Debug)]
+pub struct ResolutionMap {
+    /// Maps the
+    pub node_to_def_id_map: BTreeMap<NodeId, hir::LocalDefId>,
+    /// Maps the usage of value identifiers (variable names) to their point of
+    /// original definition
+    pub value_name_resolutions: BTreeMap<NodeId, hir::Resolution<NodeId>>,
+    /// Maps the usage of type identifiers to their point of original definition
+    pub type_name_resolutions: BTreeMap<NodeId, hir::Resolution<NodeId>>,
+}
+
+impl<'ast> Resolver {
+    pub fn new() -> Self {
+        Self {
+            builtin_primitives: BTreeMap::from_iter(
+                PrimitiveKind::ALL
+                    .iter()
+                    .map(|p| (InternedSymbol::new(&p.to_string()), *p)),
+            ),
+            builtin_functions: BTreeSet::from([InternedSymbol::new("println")]),
+            next_def_id: hir::LocalDefId::new(0), // TODO: should this be reserved for the module itself?
+            node_to_def_id_map: BTreeMap::new(),
+            global_value_scope: BTreeMap::new(),
+            global_type_scope: BTreeMap::new(),
+            value_name_resolutions: BTreeMap::new(),
+            type_name_resolutions: BTreeMap::new(),
+        }
+    }
+
     /// Resolves all names within a module in 2 steps.
     ///
     /// The first step resolves imports and locates all the definitions of
@@ -93,98 +83,169 @@ impl<'module> Resolver<'module> {
     /// keeps track of function parameters and local variables to make sure all
     /// identifiers are valid. Field and method accesses are not checked at this
     /// stage and are resolved during module type checking.
-    pub fn resolve_names(module: &'module Module) -> ModuleResolutionMap {
-        let mut resolver = Self {
+    pub fn resolve_module(&mut self, module: &'ast Module) {
+        /* Step 1 */
+
+        // TODO: resolve imports and add to import maps
+
+        /* Step 2 */
+
+        // Collect names of definitions
+        let mut def_collector = DefinitionCollector::new(self, module);
+        visit::walk_module(&mut def_collector, module);
+
+        // Resolve name references
+        let mut late_resolver = LateResolveVisitor::new(self, module);
+        visit::walk_module(&mut late_resolver, module);
+
+        // TODO: warn about unused imports
+    }
+
+    /// Returns the useful output of the resolver after successfully completing
+    /// resolutions and macro expansions in the requested modules
+    pub fn into_outputs(self) -> ResolutionMap {
+        ResolutionMap {
+            node_to_def_id_map: self.node_to_def_id_map,
+            value_name_resolutions: self.value_name_resolutions,
+            type_name_resolutions: self.type_name_resolutions,
+        }
+    }
+
+    /// Records a definition in several maps and adds the name to the
+    /// appropriate global scope
+    pub fn create_definition(
+        &mut self,
+        node_id: ast::NodeId,
+        name: InternedSymbol,
+        kind: hir::DefinitionKind,
+    ) -> hir::LocalDefId {
+        // TODO: check if this def already exists? may be needed for macro
+        // expansion
+        let owner_id = self.next_def_id;
+        self.next_def_id.increment_by(1);
+
+        self.node_to_def_id_map.insert(node_id, owner_id);
+
+        match kind {
+            hir::DefinitionKind::Function
+            | hir::DefinitionKind::Constant
+            | hir::DefinitionKind::Static => {
+                self.global_value_scope
+                    .insert(name, hir::Resolution::Definition(kind, owner_id));
+            }
+            hir::DefinitionKind::Struct
+            | hir::DefinitionKind::Enum
+            | hir::DefinitionKind::Union
+            | hir::DefinitionKind::Alias => {
+                self.global_type_scope
+                    .insert(name, hir::Resolution::Definition(kind, owner_id));
+            }
+        }
+
+        owner_id
+    }
+}
+
+struct DefinitionCollector<'res, 'ast> {
+    resolver: &'res mut Resolver,
+    module: &'ast ast::Module<'ast>,
+}
+
+impl<'res, 'ast> DefinitionCollector<'res, 'ast> {
+    fn new(resolver: &'res mut Resolver, module: &'ast ast::Module<'ast>) -> Self {
+        Self { resolver, module }
+    }
+
+    fn report_duplicate_definition(&self, offending_span: Span) -> ! {
+        eprintln!(
+            "Conflicting definition for identifier `{}` ({})",
+            self.module.source_file.value_of_span(offending_span),
+            self.module.source_file.format_span_position(offending_span)
+        );
+        self.module.source_file.highlight_span(offending_span);
+        // TODO: show where the original was defined
+        // TODO: recover from this error and keep moving
+        std::process::exit(1);
+    }
+}
+
+impl<'res, 'ast> Visitor<'ast> for DefinitionCollector<'res, 'ast> {
+    fn visit_item(&mut self, item: &'ast ast::Item) {
+        match &item.kind {
+            ast::ItemKind::FunctionDefinition(function) => {
+                if self
+                    .resolver
+                    .global_value_scope
+                    .contains_key(&function.signature.name.symbol)
+                {
+                    self.report_duplicate_definition(function.signature.name.span)
+                }
+
+                self.resolver.create_definition(
+                    item.id,
+                    function.signature.name.symbol,
+                    hir::DefinitionKind::Function,
+                );
+            }
+        }
+
+        visit::walk_item(self, item);
+    }
+}
+
+/// Visits all the AST nodes after macros have been expanded to resolve
+/// references to types and values
+pub struct LateResolveVisitor<'res, 'ast> {
+    resolver: &'res mut Resolver,
+    module: &'ast ast::Module<'ast>,
+
+    // Used to keep track of the lexical context
+    value_scope_stack: ScopeStack<hir::Resolution<NodeId>>,
+    type_scope_stack: ScopeStack<hir::Resolution<NodeId>>,
+}
+
+impl<'res, 'ast> LateResolveVisitor<'res, 'ast> {
+    pub fn new(resolver: &'res mut Resolver, module: &'ast ast::Module<'ast>) -> Self {
+        Self {
+            resolver,
             module,
             value_scope_stack: ScopeStack::new(),
             type_scope_stack: ScopeStack::new(),
-            resolutions: ModuleResolutionMap {
-                value_name_resolutions: BTreeMap::new(),
-                type_name_resolutions: BTreeMap::new(),
-            },
+        }
+    }
+
+    /// Resolves a name within the current lexical scope
+    fn resolve_symbol(
+        &self,
+        name: InternedSymbol,
+        namespace: Namespace,
+    ) -> Option<hir::Resolution<NodeId>> {
+        if namespace == Namespace::Type
+            && let Some(p) = self.resolver.builtin_primitives.get(&name)
+        {
+            return Some(hir::Resolution::Primitive(*p));
+        }
+
+        if namespace == Namespace::Value && self.resolver.builtin_functions.contains(&name) {
+            return Some(hir::Resolution::IntrinsicFunction);
+        }
+
+        let (scope_stack, global_scope) = match namespace {
+            Namespace::Value => (&self.value_scope_stack, &self.resolver.global_value_scope),
+            Namespace::Type => (&self.type_scope_stack, &self.resolver.global_type_scope),
         };
 
-        resolver.bind_built_ins();
-        // TODO: bind imports
-        // TODO: bind type aliases
-        // TODO: bind custom types (structs, unions, enums, etc)
-        resolver.bind_function_definitions();
-
-        for function in &resolver.module.function_definitions {
-            resolver.resolve_function_definition(function);
-        }
-
-        // TODO: warn about unused imports
-
-        resolver.resolutions
-    }
-
-    fn bind_built_ins(&mut self) {
-        self.value_scope_stack.add_global_binding(
-            InternedSymbol::new("println"),
-            ValueNameResolution::Definition(
-                ValueDefinitionKind::Function,
-                DefinitionId::BUILT_IN_PRINTLN,
-            ),
-        )
-    }
-
-    /// Adds all the function definitions from the module to the module's outer
-    /// scope
-    fn bind_function_definitions(&mut self) {
-        for function in &self.module.function_definitions {
-            if self
-                .value_scope_stack
-                .get_global_binding(function.signature.name.symbol)
-                .is_some()
-            {
-                self.report_duplicate_binding(function.signature.name.span)
-            }
-
-            self.value_scope_stack.add_global_binding(
-                function.signature.name.symbol,
-                ValueNameResolution::Definition(
-                    ValueDefinitionKind::Function,
-                    DefinitionId::new_module(self.module.id, function.id),
-                ),
-            )
-        }
-    }
-
-    /// Resolves all names within a function definition
-    fn resolve_function_definition(&mut self, function: &FunctionDefinition) {
-        self.value_scope_stack.push_shallow_scope();
-
-        // Resolve types of parameters and bind parameter names into the scope
-
-        for parameter in &function.signature.parameters.parameters {
-            self.resolve_function_parameter(parameter);
-        }
-
-        // Resolve return type to make sure it exists
-
-        if let Some(return_type) = &function.signature.return_type {
-            self.resolve_type(return_type);
-        }
-
-        // Go through the statements in the body to bind locals and resolve identifiers within expressions
-
-        self.resolve_block(&function.body);
-
-        self.value_scope_stack.pop_shallow_scope();
+        scope_stack
+            .get_binding(name)
+            .or_else(|| global_scope.get(&name))
+            .copied()
     }
 
     fn report_duplicate_binding(&self, offending_span: Span) -> ! {
         eprintln!(
-            "Conflicting definition for identifier `{}` ({}:{}:{})",
+            "Conflicting definition for identifier `{}` ({})",
             self.module.source_file.value_of_span(offending_span),
-            self.module.source_file.origin,
-            self.module
-                .source_file
-                .row_for_position(offending_span.start),
-            self.module
-                .source_file
-                .column_for_position(offending_span.start)
+            self.module.source_file.format_span_position(offending_span)
         );
         self.module.source_file.highlight_span(offending_span);
         // TODO: show where the original binding was defined
@@ -194,24 +255,35 @@ impl<'module> Resolver<'module> {
 
     fn report_unresolved(&self, offending_span: Span) -> ! {
         eprintln!(
-            "Unresolved name for identifier `{}` ({}:{}:{})",
+            "Unresolved name for identifier `{}` ({})",
             self.module.source_file.value_of_span(offending_span),
-            self.module.source_file.origin,
-            self.module
-                .source_file
-                .row_for_position(offending_span.start),
-            self.module
-                .source_file
-                .column_for_position(offending_span.start)
+            self.module.source_file.format_span_position(offending_span)
         );
         self.module.source_file.highlight_span(offending_span);
         // TODO: recover from this error and keep moving
         std::process::exit(1);
     }
+}
 
-    fn resolve_function_parameter(&mut self, parameter: &FunctionParameter) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Namespace {
+    Value,
+    Type,
+}
+
+impl<'res, 'ast> Visitor<'ast> for LateResolveVisitor<'res, 'ast> {
+    /// Walk the function with a fresh scope to bind parameters in
+    fn visit_function_definition(&mut self, function: &'ast FunctionDefinition) {
+        assert!(self.value_scope_stack.inner.is_empty());
+
+        self.value_scope_stack.push_shallow_scope();
+        visit::walk_function_definition(self, function);
+        self.value_scope_stack.pop_shallow_scope();
+    }
+
+    /// Binds function parameter names into the current function's scope
+    fn visit_function_parameter(&mut self, parameter: &'ast FunctionParameter) {
         // Check that name is not already bound in the current scope
-
         if self
             .value_scope_stack
             .get_shallow_binding(parameter.name.symbol)
@@ -221,78 +293,62 @@ impl<'module> Resolver<'module> {
         }
 
         // Add the binding for the parameter name
+        self.value_scope_stack
+            .add_shallow_binding(parameter.name.symbol, hir::Resolution::Local(parameter.id));
 
-        self.value_scope_stack.add_shallow_binding(
-            parameter.name.symbol,
-            ValueNameResolution::Parameter(parameter.id),
-        );
-
-        // Resolve the parameter type
-
-        self.resolve_type(&parameter.ty);
+        // Visit names and types
+        visit::walk_function_parameter(self, parameter);
     }
 
-    fn resolve_type(&mut self, ty: &Type) {
-        match &ty.kind {
-            TypeKind::QualifiedIdentifier(qualified_ident) => {
-                // There are 2 possibilities here:
-                //   1) The identifier only has one segment and must be a
-                //      primitive or local/imported custom type (alias, struct, enum,
-                //      etc.). This can be resolved by checking if it's a primitive
-                //      and then checking the global scope if that fails
-                //  2) The identifier has more than one segment and we must start
-                //      from the first and resolve from there
+    fn visit_type(&mut self, ty: &'ast Type) {
+        // FIXME: we could just visit qualified ident if it walker exposed which
+        // namespace it belongs to
 
-                // Case 1
-                if let [ident] = qualified_ident.segments.as_slice() {
-                    // Resolve from the global scope
-                    let Some(resolution) = self.type_scope_stack.get_global_binding(ident.symbol)
-                    else {
-                        self.report_unresolved(ident.span);
-                    };
+        if let TypeKind::QualifiedIdentifier(qualified_ident) = &ty.kind {
+            // There are 2 possibilities here:
+            //   1) The identifier only has one segment and must be a
+            //      primitive or local/imported custom type (alias, struct, enum,
+            //      etc.). This can be resolved by checking if it's a primitive
+            //      and then checking the global scope if that fails
+            //  2) The identifier has more than one segment and we must start
+            //      from the first and resolve from there
 
-                    self.resolutions
-                        .type_name_resolutions
-                        .insert(qualified_ident.id, resolution.clone());
-                }
+            // Case 1
+            if let [ident] = qualified_ident.segments.as_slice() {
+                // Resolve from the global scope
+                let Some(resolution) = self.resolve_symbol(ident.symbol, Namespace::Type) else {
+                    self.report_unresolved(ident.span);
+                };
 
-                // Case 2
+                self.resolver
+                    .type_name_resolutions
+                    .insert(qualified_ident.id, resolution);
+                self.resolver
+                    .type_name_resolutions
+                    .insert(ident.id, resolution);
+            }
+            // Case 2
+            else {
                 todo!("Resolve type identifier by traversing qualified identifier segments")
             }
-            TypeKind::Pointer(ty) => self.resolve_type(ty),
-            TypeKind::Slice(ty) => self.resolve_type(ty),
-            TypeKind::Array { ty, .. } => self.resolve_type(ty),
-            // Nothing needs to be done to resolve these types
-            TypeKind::Primitive(_) | TypeKind::Str | TypeKind::CStr | TypeKind::Any => {}
         }
+
+        visit::walk_type(self, ty);
     }
 
-    fn resolve_block(&mut self, block: &Block) {
+    /// Creates a new scope and walks the block
+    fn visit_block(&mut self, block: &'ast Block) {
         self.value_scope_stack.push_shallow_scope();
-
-        for statement in &block.statements {
-            self.resolve_statement(statement)
-        }
-
+        visit::walk_block(self, block);
         self.value_scope_stack.pop_shallow_scope();
     }
 
-    fn resolve_statement(&mut self, statement: &Statement) {
-        match &statement.kind {
-            StatementKind::Local(local) => self.resolve_local(local),
-            StatementKind::BareExpr(expression) | StatementKind::SemiExpr(expression) => {
-                self.resolve_expression(expression)
-            }
-            StatementKind::Empty => {}
-        }
-    }
+    /// Walks the local's type and expression before binding the name into the
+    /// current lexical scope
+    fn visit_local(&mut self, local: &'ast Local) {
+        visit::walk_local(self, local);
 
-    fn resolve_local(&mut self, local: &Local) {
-        // Check the expression first (we don't want this local's name to be
-        // available within the initialization expression)
-        if let LocalKind::Initialization(initialization_expression) = &local.kind {
-            self.resolve_expression(initialization_expression);
-        }
+        // FIXME: allow shadowing? would just require removing this check:
 
         // Check that name is not already bound in the current scope (allowed to
         // be bound in higher scopes and rebound in the current scope)
@@ -304,108 +360,41 @@ impl<'module> Resolver<'module> {
             self.report_duplicate_binding(local.name.span);
         }
 
-        // Add the binding for the local name
-
         self.value_scope_stack
-            .add_shallow_binding(local.name.symbol, ValueNameResolution::Local(local.id));
-
-        // Resolve the type if one was given explicitly
-
-        if let Some(ty) = &local.ty {
-            self.resolve_type(ty);
-        }
+            .add_shallow_binding(local.name.symbol, hir::Resolution::Local(local.id));
     }
 
-    fn resolve_expression(&mut self, expression: &Expression) {
-        match &expression.kind {
-            ExpressionKind::QualifiedIdentifier(qualified_ident) => {
-                self.resolve_identifier(qualified_ident)
-            }
-            ExpressionKind::Grouping(expression) => self.resolve_expression(expression),
-            ExpressionKind::Block(block) => self.resolve_block(block),
-            ExpressionKind::FunctionCall { target, arguments } => {
-                self.resolve_expression(target);
+    fn visit_expression(&mut self, expression: &'ast Expression) {
+        // FIXME: same as above in `visit_type`
 
-                for argument in &arguments.arguments {
-                    self.resolve_expression(argument)
-                }
-            }
-            ExpressionKind::Binary {
-                lhs,
-                operator: _,
-                rhs,
-            } => {
-                self.resolve_expression(lhs);
-                self.resolve_expression(rhs);
-            }
-            ExpressionKind::Unary {
-                operator: _,
-                operand,
-            } => self.resolve_expression(operand),
-            ExpressionKind::Cast { expression, ty } => {
-                self.resolve_expression(expression);
-                self.resolve_type(ty);
-            }
-            ExpressionKind::If {
-                condition,
-                positive,
-                negative,
-            } => {
-                self.resolve_expression(condition);
-                self.resolve_block(positive);
+        if let ExpressionKind::QualifiedIdentifier(qualified_ident) = &expression.kind {
+            // There are 2 possibilities here:
+            //   1) The ident has no qualifier and it refers to a local, function
+            //      parameter, or local/imported definition
+            //   2) The ident has a qualifier so we should start at the first segment
+            //      and resolve from there
 
-                if let Some(negative) = negative {
-                    self.resolve_expression(negative);
-                }
-            }
-            ExpressionKind::While { condition, block } => {
-                self.resolve_expression(condition);
-                self.resolve_block(block);
-            }
-            ExpressionKind::Assignment { lhs, rhs } => {
-                self.resolve_expression(rhs);
-                self.resolve_expression(lhs);
-            }
-            ExpressionKind::OperatorAssignment {
-                operator: _,
-                lhs,
-                rhs,
-            } => {
-                self.resolve_expression(rhs);
-                self.resolve_expression(lhs);
-            }
-            ExpressionKind::Return(expression) => {
-                if let Some(expression) = expression {
-                    self.resolve_expression(expression)
-                }
-            }
-            ExpressionKind::Literal(_) | ExpressionKind::Break | ExpressionKind::Continue => {}
-        }
-    }
+            // Case 1
+            if let [ident] = qualified_ident.segments.as_slice() {
+                // Resolve from the global scope
+                let Some(resolution) = self.resolve_symbol(ident.symbol, Namespace::Value) else {
+                    self.report_unresolved(ident.span);
+                };
 
-    /// Resolves a value identifier (within an expression)
-    fn resolve_identifier(&mut self, qualified_ident: &QualifiedIdentifier) {
-        // There are 2 possibilities here:
-        //   1) The ident has no qualifier and it refers to a local, function
-        //      parameter, or local/imported definition
-        //   2) The ident has a qualifier so we should start at the first segment
-        //      and resolve from there
-
-        // Case 1
-        if let [ident] = qualified_ident.segments.as_slice() {
-            let Some(resolution) = self.value_scope_stack.get_binding(ident.symbol) else {
-                self.report_unresolved(ident.span);
-            };
-
-            self.resolutions
-                .value_name_resolutions
-                .insert(qualified_ident.id, resolution.clone());
-
-            return;
+                self.resolver
+                    .value_name_resolutions
+                    .insert(qualified_ident.id, resolution);
+                self.resolver
+                    .value_name_resolutions
+                    .insert(ident.id, resolution);
+            }
+            // Case 2
+            else {
+                todo!("Resolve value identifier by traversing qualified identifier segments")
+            }
         }
 
-        // Case 2
-        todo!("Resolve value identifier by traversing qualified identifier segments")
+        visit::walk_expression(self, expression);
     }
 }
 
@@ -413,41 +402,39 @@ impl<'module> Resolver<'module> {
 /// namespace (values or types)
 #[derive(Debug)]
 struct ScopeStack<R> {
-    global_scope: BTreeMap<InternedSymbol, R>,
-    stack: VecDeque<BTreeMap<InternedSymbol, R>>,
+    inner: VecDeque<BTreeMap<InternedSymbol, R>>,
 }
 
 impl<R> ScopeStack<R> {
     fn new() -> Self {
         Self {
-            global_scope: BTreeMap::new(),
-            stack: VecDeque::new(),
+            inner: VecDeque::new(),
         }
     }
 
     /// Creates a new block or function scope
     fn push_shallow_scope(&mut self) {
-        self.stack.push_back(BTreeMap::new());
+        self.inner.push_back(BTreeMap::new());
     }
 
     /// Destroys the current block or function scope
     fn pop_shallow_scope(&mut self) {
         assert!(
-            !self.stack.is_empty(),
+            !self.inner.is_empty(),
             "Attempted to pop a shallow scope from the global context"
         );
 
-        self.stack.pop_back();
+        self.inner.pop_back();
     }
 
     /// Looks for a binding only within the current (most nested) scope
     fn get_shallow_binding(&self, symbol: InternedSymbol) -> Option<&R> {
         assert!(
-            !self.stack.is_empty(),
+            !self.inner.is_empty(),
             "Tried to get a shallow binding from the global context"
         );
 
-        let shallow_scope = self.stack.back().unwrap();
+        let shallow_scope = self.inner.back().unwrap();
 
         shallow_scope.get(&symbol)
     }
@@ -455,35 +442,23 @@ impl<R> ScopeStack<R> {
     /// Adds a binding only within the current (most nested) scope
     fn add_shallow_binding(&mut self, symbol: InternedSymbol, name_resolution: R) {
         assert!(
-            !self.stack.is_empty(),
+            !self.inner.is_empty(),
             "Tried to add a shallow binding in the global context"
         );
 
-        let shallow_scope = self.stack.back_mut().unwrap();
+        let shallow_scope = self.inner.back_mut().unwrap();
 
         shallow_scope.insert(symbol, name_resolution);
     }
 
-    /// Gets a binding from the global scope
-    fn get_global_binding(&self, symbol: InternedSymbol) -> Option<&R> {
-        self.global_scope.get(&symbol)
-    }
-
-    /// Adds a binding into the global scope which is accessible from all
-    /// shallow scopes
-    fn add_global_binding(&mut self, symbol: InternedSymbol, name_resolution: R) {
-        self.global_scope.insert(symbol, name_resolution);
-    }
-
-    /// Traverses the scope stack from back to front looking for bindings before
-    /// checking the global scope.
+    /// Traverses the scope stack from back to front looking for bindings
     fn get_binding(&self, symbol: InternedSymbol) -> Option<&R> {
-        for scope in self.stack.iter().rev() {
+        for scope in self.inner.iter().rev() {
             if let Some(binding) = scope.get(&symbol) {
                 return Some(binding);
             }
         }
 
-        self.global_scope.get(&symbol)
+        None
     }
 }

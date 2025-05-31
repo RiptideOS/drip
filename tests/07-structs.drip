@@ -1,0 +1,33 @@
+
+pub struct Node {
+    a: u32,
+    b: i64,
+    c: String
+}
+
+
+const Node::MAX_ID: u32 = 0;
+
+fn Node::new(data: *any) {
+
+}
+
+fn Node::append(*self, data: *any) -> (u8, u8) {
+    self.#a
+}
+
+fn Node#append(*self, data: *any) {
+    self.#a
+}
+
+
+let node = Node::new(&0);
+node.append(&2);
+
+fn (*Node) append(other: *Node) {
+    print(self, other);
+}
+
+Node::new();
+
+

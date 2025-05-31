@@ -1,0 +1,17 @@
+// Looks for a file named "core/lib.drip" in the include directories. If found,
+// parses the source code and then strips all the executable bodies so that they
+// are not included in this translation unit. It is expected that the module
+// will be linked into the final binary (either statically or dynamically).
+import extern core;
+
+// Resolves "core/lib.drip" using the method above and then looks for a symbol
+// defined within it called "ptr". This can be a function or another module. If
+// it's another module, we then look for a file named "core/ptr.drip" in the
+// same directory.
+import core::ptr;
+
+// Looks for a file named "another_file.drip" in the current directory. If
+// found, it adds it to the path namespace.
+module another_file;
+
+include core;

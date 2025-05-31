@@ -1,35 +1,32 @@
 //! Drip Type Checker
 //!
-//! This typechecking algorithm is implemented in 2 passes to allow deep type inference:
+//! The type-checking algorithm is implemented in 2 steps that are somewhat
+//! interwoven with each other to allow for deep type inference:
 //!
-//! 1. Traverse the AST and mark each node with either a concrete type (if
-//!     possible) or a non-specific integer/float type (will be attempted to be
-//!     inferred later). If we find obvious type mismatches, then we raise an error.
-//!     Variable bindings are terminators for type inference, meaning that we can
-//!     always either infer the entire type of the right side of a let binding and
-//!     traverse back down the tree to assign concrete types, or the entire right
-//!     side of the binding is ambiguous and will need to be inferred in the next
-//!     step.
-//! 2. For each variable binding left without a concrete type, traverse the
-//!     remainder of its scope and find the first usage of the binding where the
-//!     concrete type can be inferred. If we reach the end of the scope without
-//!     finding a usage where the type can be inferred, the type is coerced to the
-//!     default integer type (i32) for ambiguous integer types or the default float
-//!     type (f64) for ambiguous floating point types. During this process, if the
-//!     ambiguous binding is used in more than place with mismatching concrete types,
-//!     then we should report an error.
-//! 
-//! This algorithm can be later amended to perform more extensive inference for generics
+//! 1. Traverse the AST of each function checking types and creating HIR nodes.
+//!    Any nodes which don't have a concrete type (like integer literals missing a
+//!    type specifier) are assigned an ambiguous type which is used for further
+//!    checking.
+//! 2. Along the way, whenever a concrete type boundary is encoutnered (areas
+//!    where only 1 defined type is allowed such as function arguments or function
+//!    return types), traverse back down any branches that have an ambiguous type,
+//!    updating each node and performing other checks like size bounds checking.
+//!    Blocks are traversed bottom to top to efficiently resolve all type constraints.
 
-use std::{collections::BTreeMap, num::IntErrorKind};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::IntErrorKind,
+};
 
+use colored::Colorize;
 use strum::IntoEnumIterator;
 
 use crate::{
     frontend::{
         ast::{
-            Block, Expression, ExpressionKind, FunctionDefinition, Literal, LiteralKind, Local,
-            LocalKind, Module, NodeId, Statement, StatementKind, Type, TypeKind, UnaryOperatorKind,
+            BinaryOperatorKind, Block, Expression, ExpressionKind, FunctionDefinition, Literal,
+            LiteralKind, Local, LocalKind, Module, NodeId, Statement, StatementKind, Type,
+            TypeKind, UnaryOperatorKind,
         },
         intern::InternedSymbol,
         lexer::Span,
@@ -39,8 +36,8 @@ use crate::{
 
 use super::{
     hir::{
-        AssignmentKind, HirBlock, HirExpression, HirExpressionKind, HirFunctionDefinition,
-        HirFunctionParameter, HirLiteral, HirLocal, HirLocalKind, HirModule, HirStatement,
+        AssignmentKind, Block, FunctionDefinition, HirExpression, HirExpressionKind,
+        HirFunctionParameter, HirLocalKind, Literal, Local, Module, Statement,
     },
     primitive::PrimitiveKind,
     resolve::{DefinitionId, ModuleResolutionMap, ValueDefinitionKind},
@@ -50,21 +47,56 @@ use super::{
 pub struct TypeChecker<'module> {
     module: &'module Module<'module>,
     resolution_map: &'module ModuleResolutionMap,
+    /* Module-level context */
     type_table: TypeTable,
     function_type_map: BTreeMap<DefinitionId, TypeId>,
+    /* Function-local context */
     next_local_id: u32,
     node_to_local_map: BTreeMap<NodeId, LocalDefinitionId>,
     local_type_map: BTreeMap<LocalDefinitionId, TypeId>,
-    return_points: Vec<NodeId>,
-    return_type_map: BTreeMap<NodeId, TypeId>,
-    return_span_map: BTreeMap<NodeId, Span>,
+    unused_locals: BTreeSet<LocalDefinitionId>,
+    return_type: Option<TypeId>,
+}
+
+macro_rules! function {
+    () => {{
+        fn f() {}
+        fn type_name_of<T>(_: T) -> &'static str {
+            std::any::type_name::<T>()
+        }
+        type_name_of(f)
+            .rsplit("::")
+            .find(|&part| part != "f" && part != "{{closure}}")
+            .expect("Short function name")
+    }};
+}
+
+macro_rules! report_error {
+    ($self:expr, $span:expr, $message:expr $(,)?) => {{
+        let message = format!("{}: {}", "error".red(), $message);
+
+        #[cfg(feature = "error-backtrace")]
+        let message = format!(
+            "{}: {}\n{}",
+            "backtrace".blue(),
+            format!(
+                "{}::{} {}",
+                module_path!(),
+                function!(),
+                format!("(at {}:{}:{})", file!(), line!(), column!()).white()
+            ),
+            message
+        );
+
+        $self.report_error($span, message)
+    }};
 }
 
 impl<'module> TypeChecker<'module> {
     pub fn type_check_module(
         module: &'module Module,
         resolution_map: &'module ModuleResolutionMap,
-    ) -> HirModule {
+    ) -> Module {
         let mut type_checker = Self {
             module,
             resolution_map,
@@ -73,9 +105,8 @@ impl<'module> TypeChecker<'module> {
             next_local_id: 0,
             node_to_local_map: BTreeMap::new(),
             local_type_map: BTreeMap::new(),
-            return_points: Vec::new(),
-            return_type_map: BTreeMap::new(),
-            return_span_map: BTreeMap::new(),
+            unused_locals: BTreeSet::new(),
+            return_type: None,
         };
 
         type_checker.analyze_built_ins();
@@ -97,7 +128,7 @@ impl<'module> TypeChecker<'module> {
             function_definitions.push(type_checker.type_check_function(function))
         }
 
-        HirModule {
+        Module {
             id: type_checker.module.id,
             function_definitions,
             type_table: type_checker.type_table,
@@ -179,7 +210,7 @@ impl<'module> TypeChecker<'module> {
                     Ok(value) => value,
                     Err(e) => match e.kind() {
                         IntErrorKind::PosOverflow => {
-                            self.report_error(length.span, "Integer is too large for it's type")
+                            report_error!(self, length.span, "Integer is too large for it's type")
                         }
                         _ => unreachable!(),
                     },
@@ -200,33 +231,40 @@ impl<'module> TypeChecker<'module> {
         id
     }
 
-    fn report_error(&self, offending_span: Span, message: &str) -> ! {
+    fn report_error(&self, offending_span: Span, message: impl AsRef<str>) -> ! {
         eprintln!(
-            "{} ({}:{}:{})",
-            message,
-            self.module.source_file.origin,
-            self.module
-                .source_file
-                .row_for_position(offending_span.start),
-            self.module
-                .source_file
-                .column_for_position(offending_span.start)
+            "{} {}",
+            message.as_ref(),
+            format!(
+                "(at {}:{}:{})",
+                self.module.source_file.origin,
+                self.module
+                    .source_file
+                    .row_for_position(offending_span.start),
+                self.module
+                    .source_file
+                    .column_for_position(offending_span.start)
+            )
+            .white()
         );
         self.module.source_file.highlight_span(offending_span);
         // TODO: recover from this error and keep moving
         std::process::exit(1);
     }
 
-    fn type_check_function(&mut self, function: &FunctionDefinition) -> HirFunctionDefinition {
+    fn type_check_function(&mut self, function: &FunctionDefinition) -> FunctionDefinition {
         // First we check that the body of the function is valid, then we make
         // sure that the return type of the block is the same as the return type
         // of the function
 
+        println!(
+            "Type checking function: {}",
+            function.signature.name.symbol.value()
+        );
+
         self.next_local_id = 0;
         self.node_to_local_map.clear();
         self.local_type_map.clear();
-        self.return_points.clear();
-        self.return_type_map.clear();
 
         let parameters = function
             .signature
@@ -258,35 +296,36 @@ impl<'module> TypeChecker<'module> {
             self.type_table.get_primitive(PrimitiveKind::Unit)
         };
 
-        let body = self.type_check_block(&function.body);
+        self.return_type = Some(return_type);
 
-        for return_point in &self.return_points {
-            let ty = self
-                .return_type_map
-                .get(return_point)
-                .expect("All return points should have an associated type in the map");
+        let mut body = self.type_check_block(&function.body);
 
-            if *ty != return_type {
-                let span = *self
-                    .return_span_map
-                    .get(return_point)
-                    .expect("All return points should have an associated span in the map");
-
-                self.report_error(span, "Function return type does not match it's signature")
-            }
-        }
-
-        if body.return_type != return_type {
+        if body.return_type != return_type
+            && !self
+                .type_table
+                .get(body.return_type)
+                .can_coerce_into(self.type_table.get(return_type))
+        {
             let span = if let Some(last) = function.body.statements.last() {
                 last.span
             } else {
                 function.body.span
             };
 
-            self.report_error(span, "Function return type does not match it's signature")
+            report_error!(
+                self,
+                span,
+                format!(
+                    "Function return type does not match it's signature. Expected {} but found {}",
+                    self.type_table.get(return_type),
+                    self.type_table.get(body.return_type),
+                )
+            )
         }
 
-        HirFunctionDefinition {
+        self.assign_block(&mut body, return_type);
+
+        FunctionDefinition {
             name: function.signature.name.symbol,
             parameters,
             return_type,
@@ -294,14 +333,16 @@ impl<'module> TypeChecker<'module> {
         }
     }
 
-    fn type_check_block(&mut self, block: &Block) -> HirBlock {
+    fn type_check_block(&mut self, block: &Block) -> Block {
         // We need to type check all the contained statements and determine the
         // return type of the block
 
+        let len = block.statements.len();
         let statements: Vec<_> = block
             .statements
             .iter()
-            .flat_map(|statement| self.type_check_statement(statement))
+            .enumerate()
+            .flat_map(|(i, statement)| self.type_check_statement(statement, i == len - 1))
             .collect();
 
         // If there is no last statement, the block is empty and the return type
@@ -318,7 +359,7 @@ impl<'module> TypeChecker<'module> {
                     return None;
                 };
 
-                let HirStatement::Expression(expression) = statement else {
+                let Statement::Expression(expression) = statement else {
                     unreachable!(
                         "BareExpr AST statement was not turned into Expression HIR statement"
                     );
@@ -328,18 +369,16 @@ impl<'module> TypeChecker<'module> {
             })
             .unwrap_or_else(|| self.type_table.get_primitive(PrimitiveKind::Unit));
 
-        HirBlock {
+        Block {
             statements,
             return_type,
         }
     }
 
     /// Empty statements are filtered out and return None
-    fn type_check_statement(&mut self, statement: &Statement) -> Option<HirStatement> {
+    fn type_check_statement(&mut self, statement: &Statement, is_last: bool) -> Option<Statement> {
         Some(match &statement.kind {
-            StatementKind::Local(local) => {
-                HirStatement::Local(Box::new(self.type_check_local(local)))
-            }
+            StatementKind::Local(local) => Statement::Local(Box::new(self.type_check_local(local))),
             StatementKind::BareExpr(expression) => {
                 let checked_expression = self.type_check_expression(expression);
 
@@ -347,25 +386,29 @@ impl<'module> TypeChecker<'module> {
                 | HirExpressionKind::If { .. }
                 | HirExpressionKind::While { .. } = checked_expression.kind
                 {
-                    if checked_expression.ty != self.type_table.get_primitive(PrimitiveKind::Unit) {
+                    if !is_last
+                        && checked_expression.ty
+                            != self.type_table.get_primitive(PrimitiveKind::Unit)
+                    {
                         // TODO: highlight return point
-                        self.report_error(
+                        report_error!(
+                            self,
                             expression.span,
                             "Bare block expression with non-unit return value",
                         )
                     }
                 }
 
-                HirStatement::Expression(Box::new(checked_expression))
+                Statement::Expression(Box::new(checked_expression))
             }
             StatementKind::SemiExpr(expression) => {
-                HirStatement::Expression(Box::new(self.type_check_expression(expression)))
+                Statement::Expression(Box::new(self.type_check_expression(expression)))
             }
             StatementKind::Empty => return None,
         })
     }
 
-    fn type_check_local(&mut self, local: &Local) -> HirLocal {
+    fn type_check_local(&mut self, local: &Local) -> Local {
         // Create a local definition ID, type check the expression if it exists,
         // calculate the type ID for the explicit type if it's present, and if
         // it is then check that the types match
@@ -393,7 +436,11 @@ impl<'module> TypeChecker<'module> {
 
         let ty = match &kind {
             HirLocalKind::Declaration => explicit_type.unwrap_or_else(|| {
-                self.report_error(local.span, "Local declaration is missing an explicit type")
+                report_error!(
+                    self,
+                    local.span,
+                    "Local declaration is missing an explicit type"
+                )
             }),
             HirLocalKind::Initialization(expression) => {
                 if let Some(explicit_type) = explicit_type {
@@ -401,9 +448,12 @@ impl<'module> TypeChecker<'module> {
                         let init_type = self.type_table.get(expression.ty);
                         let explicit_type = self.type_table.get(explicit_type);
 
-                        self.report_error(
+                        report_error!(
+                            self,
                             local.span,
-                            &format!("Local variable initializer of type {init_type} does not match explicit type {explicit_type}"),
+                            &format!(
+                                "Local variable initializer of type {init_type} does not match explicit type {explicit_type}"
+                            ),
                         );
                     }
 
@@ -415,8 +465,9 @@ impl<'module> TypeChecker<'module> {
         };
 
         self.local_type_map.insert(id, ty);
+        self.unused_locals.insert(id);
 
-        HirLocal {
+        Local {
             id,
             name: local.name.symbol,
             is_mutable: local.is_mutable,
@@ -451,6 +502,8 @@ impl<'module> TypeChecker<'module> {
                             .node_to_local_map
                             .get(node_id)
                             .expect("Nodes that reference local definitions should be in the map");
+
+                        self.unused_locals.remove(&local_def_id);
 
                         let ty = *self
                             .local_type_map
@@ -495,7 +548,7 @@ impl<'module> TypeChecker<'module> {
                 /* Check the target and arguments first */
 
                 let checked_target = self.type_check_expression(target);
-                let checked_arguments: Vec<_> = arguments
+                let mut checked_arguments: Vec<_> = arguments
                     .arguments
                     .iter()
                     .map(|a| self.type_check_expression(a))
@@ -509,9 +562,10 @@ impl<'module> TypeChecker<'module> {
                     parameters,
                     return_type,
                     is_variadic,
-                } = unique_type
+                } = unique_type.clone()
                 else {
-                    self.report_error(
+                    report_error!(
+                        self,
                         target.span,
                         &format!("Type {unique_type} is not a function"),
                     );
@@ -520,7 +574,8 @@ impl<'module> TypeChecker<'module> {
                 /* Make sure arguments match their corresponding parameters */
 
                 if parameters.len() != checked_arguments.len() && !is_variadic {
-                    self.report_error(
+                    report_error!(
+                        self,
                         arguments.span,
                         &format!(
                             "Expected {} argument(s) but found {}",
@@ -530,13 +585,32 @@ impl<'module> TypeChecker<'module> {
                     );
                 }
 
-                for (i, (parameter_type, argument)) in
-                    parameters.iter().zip(checked_arguments.iter()).enumerate()
+                for (i, (parameter_type, argument)) in parameters
+                    .iter()
+                    .zip(checked_arguments.iter_mut())
+                    .enumerate()
                 {
-                    let argument_type = self.type_table.get(argument.ty);
+                    let mut argument_type = self.type_table.get(argument.ty).clone();
 
-                    if parameter_type != argument_type {
-                        self.report_error(
+                    if parameter_type == &argument_type {
+                        continue;
+                    }
+
+                    // Try to coerce argument type into the expected parameter
+                    // type (for untyped integers and floats for example)
+                    if argument_type.can_coerce_into(parameter_type) {
+                        println!("coercing {} to {}", argument_type, parameter_type);
+
+                        let parameter_type_id =
+                            self.type_table.insert_if_absent(parameter_type.clone());
+                        self.assign_expression(argument, parameter_type_id);
+                        argument_type = self.type_table.get(argument.ty).clone();
+                    }
+
+                    // If coercion failed, report a type mismatch
+                    if parameter_type != &argument_type {
+                        report_error!(
+                            self,
                             arguments.arguments[i].span,
                             &format!("Expected type {parameter_type} but found {argument_type}"),
                         );
@@ -547,7 +621,7 @@ impl<'module> TypeChecker<'module> {
 
                 let ty = self
                     .type_table
-                    .index_of(return_type)
+                    .index_of(&return_type)
                     .expect("Function return type should exist in the type table");
 
                 HirExpression {
@@ -559,41 +633,100 @@ impl<'module> TypeChecker<'module> {
                 }
             }
             ExpressionKind::Binary { lhs, operator, rhs } => {
-                let lhs = self.type_check_expression(lhs);
-                let rhs = self.type_check_expression(rhs);
+                let mut lhs = self.type_check_expression(lhs);
+                let mut rhs = self.type_check_expression(rhs);
 
-                // TODO: Allow lhs and rhs types to be different
+                let lhs_unique_type = self.type_table.get(lhs.ty).clone();
+                let rhs_unique_type = self.type_table.get(rhs.ty).clone();
 
-                if lhs.ty != rhs.ty {
+                // Both sides must either be the same type or have compatible
+                // coercive types
+                if lhs.ty != rhs.ty
+                    && !lhs_unique_type.can_coerce_into(&rhs_unique_type)
+                    && !rhs_unique_type.can_coerce_into(&lhs_unique_type)
+                {
                     let lhs = self.type_table.get(lhs.ty);
                     let rhs = self.type_table.get(rhs.ty);
 
-                    self.report_error(
+                    report_error!(
+                        self,
                         expression.span,
                         &format!(
-                            "Sides of binary expression have different types. Left side of binary expression is of type {} while right side is of type {}.", 
-                            lhs,
-                            rhs
+                            "Sides of binary expression have incompatible types. Left side is of type {} while right side is of type {}.",
+                            lhs, rhs
                         ),
                     )
                 }
 
-                let ty = lhs.ty;
-                let unique_type = self.type_table.get(ty);
+                // If only one side is ambiguous, try coercing it to the desired type
+                match (
+                    lhs_unique_type.is_ambiguous(),
+                    rhs_unique_type.is_ambiguous(),
+                ) {
+                    (true, false) => self.assign_expression(&mut lhs, rhs.ty),
+                    (false, true) => self.assign_expression(&mut rhs, lhs.ty),
+                    (true, true) | (false, false) => {}
+                }
 
-                let UniqueType::Primitive(kind) = unique_type else {
-                    self.report_error(
+                let (ty, unique_type) = (lhs.ty, lhs_unique_type);
+
+                match unique_type {
+                    UniqueType::Integer => {
+                        if !PrimitiveKind::I32.supports_binary_op(operator.kind) {
+                            report_error!(
+                                self,
+                                expression.span,
+                                &format!("Type {unique_type} does not support this operator"),
+                            )
+                        }
+                    }
+                    UniqueType::Float => {
+                        if !PrimitiveKind::F64.supports_binary_op(operator.kind) {
+                            report_error!(
+                                self,
+                                expression.span,
+                                &format!("Type {unique_type} does not support this operator"),
+                            )
+                        }
+                    }
+                    UniqueType::Primitive(kind) => {
+                        if !kind.supports_binary_op(operator.kind) {
+                            report_error!(
+                                self,
+                                expression.span,
+                                &format!("Type {unique_type} does not support this operator"),
+                            )
+                        }
+                    }
+                    _ => report_error!(
+                        self,
                         expression.span,
                         "Binary operators can only be applied to primitive types at this time",
-                    )
-                };
-
-                if !kind.supports_binary_op(operator.kind) {
-                    self.report_error(
-                        expression.span,
-                        &format!("Type {unique_type} does not support this operator"),
-                    )
+                    ),
                 }
+
+                let ty = match operator.kind {
+                    BinaryOperatorKind::Add
+                    | BinaryOperatorKind::Subtract
+                    | BinaryOperatorKind::Multiply
+                    | BinaryOperatorKind::Divide
+                    | BinaryOperatorKind::Modulus
+                    | BinaryOperatorKind::BitwiseAnd
+                    | BinaryOperatorKind::BitwiseOr
+                    | BinaryOperatorKind::BitwiseXor
+                    | BinaryOperatorKind::ShiftLeft
+                    | BinaryOperatorKind::ShiftRight => ty,
+                    BinaryOperatorKind::Equals
+                    | BinaryOperatorKind::NotEquals
+                    | BinaryOperatorKind::LessThan
+                    | BinaryOperatorKind::LessThanOrEqualTo
+                    | BinaryOperatorKind::GreaterThan
+                    | BinaryOperatorKind::GreaterThanOrEqualTo
+                    | BinaryOperatorKind::LogicalAnd
+                    | BinaryOperatorKind::LogicalOr => {
+                        self.type_table.get_primitive(PrimitiveKind::Bool)
+                    }
+                };
 
                 HirExpression {
                     ty,
@@ -615,33 +748,49 @@ impl<'module> TypeChecker<'module> {
                         let unique_type = self.type_table.get(ty);
 
                         match unique_type {
-                            UniqueType::Primitive(_) => self.report_error(
+                            UniqueType::Unknown => todo!("Handle unknown types"),
+                            UniqueType::Integer | UniqueType::Float => report_error!(
+                                self,
+                                expression.span,
+                                &format!("Type {unique_type} cannot be dereferenced"),
+                            ),
+                            UniqueType::Primitive(_) => report_error!(
+                                self,
                                 expression.span,
                                 &format!("Primitive type {unique_type} cannot be dereferenced"),
                             ),
-                            UniqueType::Pointer(inner_type) =>  self.type_table.insert_if_absent(*inner_type.clone()),
-                            UniqueType::Slice(_) => self.report_error(
+                            UniqueType::Pointer(inner_type) => {
+                                self.type_table.insert_if_absent(*inner_type.clone())
+                            }
+                            UniqueType::Slice(_) => report_error!(
+                                self,
                                 expression.span,
                                 &format!("Slice type {unique_type} cannot be dereferenced"),
                             ),
-                            UniqueType::Str => self.report_error(
+                            UniqueType::Str => report_error!(
+                                self,
                                 expression.span,
                                 &format!("Type {unique_type} cannot be dereferenced"),
                             ),
                             UniqueType::CStr => self.type_table.get_primitive(PrimitiveKind::I8),
-                            UniqueType::Array { ..} => self.report_error(
+                            UniqueType::Array { .. } => report_error!(
+                                self,
                                 expression.span,
-                                &format!("Array type {unique_type} cannot be dereferenced. Index the array or first cast an array pointer to a raw pointer type."),
+                                &format!(
+                                    "Array type {unique_type} cannot be dereferenced. Index the array or first cast an array pointer to a raw pointer type."
+                                ),
                             ),
-                            UniqueType::FunctionPointer {
-                          ..
-                            } => self.report_error(
+                            UniqueType::FunctionPointer { .. } => report_error!(
+                                self,
                                 expression.span,
                                 "Function pointers cannot be dereferenced, only called. To read the bytes from a function definition, first cast it to a `*u8` pointer.",
                             ),
-                            UniqueType::Any => self.report_error(
+                            UniqueType::Any => report_error!(
+                                self,
                                 expression.span,
-                                &format!("{unique_type} pointers cannot be dereferenced directly. Cast it to a defined pointer type first."),
+                                &format!(
+                                    "{unique_type} pointers cannot be dereferenced directly. Cast it to a defined pointer type first."
+                                ),
                             ),
                         }
                     }
@@ -654,24 +803,53 @@ impl<'module> TypeChecker<'module> {
                     UnaryOperatorKind::LogicalNot
                     | UnaryOperatorKind::BitwiseNot
                     | UnaryOperatorKind::Negate => {
-                        let UniqueType::Primitive(kind) = unique_type else {
-                            self.report_error(
-                                expression.span,
-                                &format!(
-                                    "The `{}` operator can only be applied to primitive types",
-                                    operator.kind
-                                ),
-                            )
-                        };
-
-                        if !kind.supports_unary_op(operator.kind) {
-                            self.report_error(
-                                expression.span,
-                                &format!(
-                                    "Type {unique_type} does not support the `{}` operator",
-                                    operator.kind
-                                ),
-                            )
+                        match unique_type {
+                            UniqueType::Integer => {
+                                if !PrimitiveKind::I32.supports_unary_op(operator.kind) {
+                                    report_error!(
+                                        self,
+                                        expression.span,
+                                        &format!(
+                                            "Type {unique_type} does not support the `{}` operator",
+                                            operator.kind
+                                        ),
+                                    )
+                                }
+                            }
+                            UniqueType::Float => {
+                                if !PrimitiveKind::F64.supports_unary_op(operator.kind) {
+                                    report_error!(
+                                        self,
+                                        expression.span,
+                                        &format!(
+                                            "Type {unique_type} does not support the `{}` operator",
+                                            operator.kind
+                                        ),
+                                    )
+                                }
+                            }
+                            UniqueType::Primitive(kind) => {
+                                if !kind.supports_unary_op(operator.kind) {
+                                    report_error!(
+                                        self,
+                                        expression.span,
+                                        &format!(
+                                            "Type {unique_type} does not support the `{}` operator",
+                                            operator.kind
+                                        ),
+                                    )
+                                }
+                            }
+                            _ => {
+                                report_error!(
+                                    self,
+                                    expression.span,
+                                    &format!(
+                                        "The `{}` operator can only be applied to primitive types",
+                                        operator.kind
+                                    ),
+                                )
+                            }
                         }
 
                         ty
@@ -690,22 +868,29 @@ impl<'module> TypeChecker<'module> {
                 expression: current,
                 ty,
             } => {
-                let checked_expression = self.type_check_expression(current);
+                let mut checked_expression = self.type_check_expression(current);
 
                 let target_type = self.compute_unique_type(ty);
                 let type_id = self.type_table.insert_if_absent(target_type.clone());
 
                 let UniqueType::Primitive(target_primitive) = &target_type else {
-                    self.report_error(
+                    report_error!(
+                        self,
                         ty.span,
                         &format!("Cannot cast as non-primitive type {target_type}"),
                     );
                 };
 
-                let current_type = self.type_table.get(checked_expression.ty);
+                let mut current_type = self.type_table.get(checked_expression.ty);
+
+                if current_type.can_coerce_into(&target_type) {
+                    self.assign_expression(&mut checked_expression, type_id);
+                    current_type = self.type_table.get(checked_expression.ty);
+                }
 
                 let UniqueType::Primitive(current_primitive) = current_type else {
-                    self.report_error(
+                    report_error!(
+                        self,
                         current.span,
                         &format!("Cannot cast non-primitive type {current_type} as {target_type}"),
                     );
@@ -714,7 +899,13 @@ impl<'module> TypeChecker<'module> {
                 if current_primitive != target_primitive
                     && !current_primitive.can_be_cast_to(*target_primitive)
                 {
-                    self.report_error(expression.span, &format!("Cast types are incompatible. Cannot cast {current_type} as {target_type}"));
+                    report_error!(
+                        self,
+                        expression.span,
+                        &format!(
+                            "Cast types are incompatible. Cannot cast {current_type} as {target_type}"
+                        )
+                    );
                 }
 
                 HirExpression {
@@ -733,7 +924,7 @@ impl<'module> TypeChecker<'module> {
                 let checked_condition = self.type_check_expression(condition);
 
                 if checked_condition.ty != self.type_table.get_primitive(PrimitiveKind::Bool) {
-                    self.report_error(condition.span, "If condition must be of type `bool`");
+                    report_error!(self, condition.span, "If condition must be of type `bool`");
                 }
 
                 let positive = self.type_check_block(positive);
@@ -741,7 +932,8 @@ impl<'module> TypeChecker<'module> {
 
                 if let Some(checked_negative) = &checked_negative {
                     if positive.return_type != checked_negative.ty {
-                        self.report_error(
+                        report_error!(
+                            self,
                             negative.as_ref().unwrap().span,
                             "Types of positive and negative blocks of if statement do not match",
                         )
@@ -761,7 +953,11 @@ impl<'module> TypeChecker<'module> {
                 let checked_condition = self.type_check_expression(condition);
 
                 if checked_condition.ty != self.type_table.get_primitive(PrimitiveKind::Bool) {
-                    self.report_error(condition.span, "While condition must be of type `bool`");
+                    report_error!(
+                        self,
+                        condition.span,
+                        "While condition must be of type `bool`"
+                    );
                 }
 
                 let block = self.type_check_block(block);
@@ -807,19 +1003,35 @@ impl<'module> TypeChecker<'module> {
                 kind: HirExpressionKind::Continue,
             },
             ExpressionKind::Return(result) => {
-                let result = dbg!(result).as_ref().map(|e| self.type_check_expression(e));
-                let ty = result
+                let value = result.as_ref().map(|e| self.type_check_expression(e));
+                let ty = value
                     .as_ref()
                     .map(|e| e.ty)
                     .unwrap_or_else(|| self.type_table.get_primitive(PrimitiveKind::Unit));
 
-                self.return_points.push(expression.id);
-                self.return_type_map.insert(expression.id, ty);
-                self.return_span_map.insert(expression.id, expression.span);
+                if &ty != self.return_type.as_ref().unwrap() {
+                    if let Some(result) = result {
+                        report_error!(
+                            self,
+                            result.span,
+                            format!(
+                                "mismatched types expected {}, found {}",
+                                self.type_table.get(self.return_type.unwrap()),
+                                self.type_table.get(ty)
+                            )
+                        );
+                    } else {
+                        report_error!(
+                            self,
+                            expression.span,
+                            "`return;` in a function whose return type is not `()`"
+                        );
+                    }
+                };
 
                 HirExpression {
                     ty: self.type_table.get_primitive(PrimitiveKind::Unit),
-                    kind: HirExpressionKind::Return(result.map(Box::new)),
+                    kind: HirExpressionKind::Return(value.map(Box::new)),
                 }
             }
         }
@@ -827,8 +1039,8 @@ impl<'module> TypeChecker<'module> {
 
     fn type_check_assignment(&mut self, lhs: &Expression, rhs: &Expression) -> HirExpression {
         let span = Span::new(lhs.span.start, rhs.span.end);
-        let lhs = self.type_check_expression(lhs);
-        let rhs = self.type_check_expression(rhs);
+        let mut lhs = self.type_check_expression(lhs);
+        let mut rhs = self.type_check_expression(rhs);
 
         // We have to make sure that:
         //   1) The lhs supports assignment (MUST be a local identifier
@@ -847,7 +1059,13 @@ impl<'module> TypeChecker<'module> {
                     let lhs = self.type_table.get(lhs.ty);
                     let rhs = self.type_table.get(rhs.ty);
 
-                    self.report_error(span, &format!("Left and right side of assignment expression have incompatible types. Cannot assign type {rhs} to variable of type {lhs}."));
+                    report_error!(
+                        self,
+                        span,
+                        &format!(
+                            "Left and right side of assignment expression have incompatible types. Cannot assign type {rhs} to variable of type {lhs}."
+                        )
+                    );
                 }
 
                 HirExpression {
@@ -863,10 +1081,25 @@ impl<'module> TypeChecker<'module> {
                 UnaryOperatorKind::Deref => {
                     // Type of the LHS will be the dereferenced type
                     if lhs.ty != rhs.ty {
-                        let lhs = self.type_table.get(lhs.ty);
-                        let rhs = self.type_table.get(rhs.ty);
+                        let lhs_unique_type = self.type_table.get(lhs.ty);
+                        let rhs_unique_type = self.type_table.get(rhs.ty);
 
-                        self.report_error(span, &format!("Left and right side of assignment expression have incompatible types. Cannot assign type {rhs} to dereferenced type {lhs}."));
+                        if !rhs_unique_type.can_coerce_into(lhs_unique_type) {
+                            report_error!(
+                                self,
+                                span,
+                                &format!(
+                                    "Left and right side of assignment expression have incompatible types. Cannot assign type {rhs_unique_type} to dereferenced type {lhs_unique_type}."
+                                )
+                            );
+                        }
+
+                        println!(
+                            "coercing rhs {} to lhs {}",
+                            rhs_unique_type, lhs_unique_type
+                        );
+
+                        self.assign_expression(&mut rhs, lhs.ty);
                     }
 
                     HirExpression {
@@ -878,54 +1111,67 @@ impl<'module> TypeChecker<'module> {
                         },
                     }
                 }
-                _ => self.report_error(
+                _ => report_error!(
+                    self,
                     span,
                     &format!("Cannot assign a value to the result of a `{operator} operation"),
                 ),
             },
             HirExpressionKind::Literal(_) => {
-                self.report_error(span, "Cannot reassign the value of a literal")
+                report_error!(self, span, "Cannot reassign the value of a literal")
             }
             HirExpressionKind::Definition(_) => {
-                self.report_error(span, "Cannot reassign the value of a non-local definition")
+                report_error!(
+                    self,
+                    span,
+                    "Cannot reassign the value of a non-local definition"
+                )
             }
             HirExpressionKind::Block(_) => {
-                self.report_error(span, "Cannot assign a value to a block expression")
+                report_error!(self, span, "Cannot assign a value to a block expression")
             }
             HirExpressionKind::FunctionCall { .. } => {
-                self.report_error(span, "Cannot assign a value to a function call expression")
+                report_error!(
+                    self,
+                    span,
+                    "Cannot assign a value to a function call expression"
+                )
             }
-            HirExpressionKind::Binary { .. } => self.report_error(
+            HirExpressionKind::Binary { .. } => report_error!(
+                self,
                 span,
                 "Cannot assign a value to the result of a binary expression",
             ),
-            HirExpressionKind::Cast { .. } => self.report_error(
+            HirExpressionKind::Cast { .. } => report_error!(
+                self,
                 span,
                 "Cannot assign a value to the result of a cast expression",
             ),
             HirExpressionKind::If { .. } => {
-                self.report_error(span, "Cannot assign a value to an if expression")
+                report_error!(self, span, "Cannot assign a value to an if expression")
             }
             HirExpressionKind::While { .. } => {
-                self.report_error(span, "Cannot assign a value to an while expression")
+                report_error!(self, span, "Cannot assign a value to an while expression")
             }
             HirExpressionKind::Assignment { .. } => {
-                unreachable!("Assignment expressions cannot be the left hand side of other assignment expressions")
+                unreachable!(
+                    "Assignment expressions cannot be the left hand side of other assignment expressions"
+                )
             }
             HirExpressionKind::Break => {
-                self.report_error(span, "Cannot assign a value to a break expression")
+                report_error!(self, span, "Cannot assign a value to a break expression")
             }
             HirExpressionKind::Continue => {
-                self.report_error(span, "Cannot assign a value to a continue expression")
+                report_error!(self, span, "Cannot assign a value to a continue expression")
             }
             HirExpressionKind::Return(_) => {
-                self.report_error(span, "Cannot assign a value to a return expression")
+                report_error!(self, span, "Cannot assign a value to a return expression")
             }
         }
     }
 
     /// Parses the contents of a literal and determines the type
-    fn type_check_literal(&mut self, literal: &Literal) -> (TypeId, HirLiteral) {
+    fn type_check_literal(&mut self, literal: &Literal) -> (TypeId, Literal) {
         // TODO: allow type inference if a suffix isn't explicitly specified for
         // integer and float types
 
@@ -941,19 +1187,19 @@ impl<'module> TypeChecker<'module> {
 
                 (
                     self.type_table.get_primitive(PrimitiveKind::Bool),
-                    HirLiteral::Boolean(value),
+                    Literal::Boolean(value),
                 )
             }
             LiteralKind::Byte => todo!(),
             LiteralKind::Char => {
                 // Chop the single quotes off the ends of the char
                 let Ok(value) = value[1..value.len() - 1].parse() else {
-                    self.report_error(literal.span, "Failed to parse malformed char literal")
+                    report_error!(self, literal.span, "Failed to parse malformed char literal")
                 };
 
                 (
                     self.type_table.get_primitive(PrimitiveKind::Char),
-                    HirLiteral::Char(value),
+                    Literal::Char(value),
                 )
             }
             LiteralKind::Integer => {
@@ -965,15 +1211,15 @@ impl<'module> TypeChecker<'module> {
                     Ok(value) => value,
                     Err(e) => match e.kind() {
                         IntErrorKind::PosOverflow => {
-                            self.report_error(literal.span, "Integer is too large for it's type")
+                            report_error!(self, literal.span, "Integer is too large for it's type")
                         }
                         _ => unreachable!(),
                     },
                 };
 
                 (
-                    self.type_table.get_primitive(PrimitiveKind::I32),
-                    HirLiteral::Integer(value),
+                    self.type_table.insert_if_absent(UniqueType::Integer),
+                    Literal::Integer(value),
                 )
             }
             LiteralKind::Float => {
@@ -982,12 +1228,12 @@ impl<'module> TypeChecker<'module> {
                 // Therefore any error generated in parsing the float literal
                 // must be because of that.
                 let Ok(value) = value.parse() else {
-                    self.report_error(literal.span, "Float is too large for it's type")
+                    report_error!(self, literal.span, "Float is too large for it's type")
                 };
 
                 (
-                    self.type_table.get_primitive(PrimitiveKind::F64),
-                    HirLiteral::Float64(value),
+                    self.type_table.insert_if_absent(UniqueType::Float),
+                    Literal::Float64(value),
                 )
             }
             LiteralKind::String => {
@@ -996,11 +1242,157 @@ impl<'module> TypeChecker<'module> {
 
                 (
                     self.type_table.insert_if_absent(UniqueType::Str),
-                    HirLiteral::String(value),
+                    Literal::String(value),
                 )
             }
             LiteralKind::ByteString => todo!(),
             LiteralKind::CString => todo!(),
+        }
+    }
+
+    fn assign_expression(&mut self, expression: &mut HirExpression, ty: TypeId) {
+        let unique_type = self.type_table.get(ty);
+
+        assert!(
+            expression.ty == ty
+                || self
+                    .type_table
+                    .get(expression.ty)
+                    .can_coerce_into(unique_type)
+        );
+
+        match &mut expression.kind {
+            HirExpressionKind::Literal(_) => {
+                // TODO: make sure value fits into type size
+
+                let literal_unique_type = self.type_table.get(expression.ty);
+
+                assert!(expression.ty == ty || literal_unique_type.is_ambiguous());
+            }
+            HirExpressionKind::LocalDefinition(local_definition_id) => {
+                let previous_type = self.local_type_map.get(local_definition_id).unwrap();
+                let previous_unique_type = self.type_table.get(*previous_type);
+
+                // If we havent infered the type of this definition yet, put the
+                // type into the map and continue.
+                if previous_unique_type.is_ambiguous() {
+                    dbg!(previous_unique_type, unique_type);
+                    assert!(previous_unique_type.can_coerce_into(unique_type));
+                    self.local_type_map.insert(*local_definition_id, ty);
+                }
+            }
+            HirExpressionKind::Definition(_) => assert_eq!(expression.ty, ty),
+            HirExpressionKind::Block(block) => self.assign_block(block, ty),
+            HirExpressionKind::FunctionCall { .. } => assert_eq!(expression.ty, ty),
+            HirExpressionKind::Binary {
+                ref mut lhs,
+                operator,
+                ref mut rhs,
+            } => {
+                self.assign_expression(lhs, ty);
+                self.assign_expression(rhs, ty);
+            }
+            HirExpressionKind::Unary { operator, operand } => match operator {
+                UnaryOperatorKind::Deref => {
+                    // We know the type of the sub-expression is a pointer
+
+                    let pointer_type =
+                        self.type_table
+                            .insert_if_absent(UniqueType::Pointer(Box::new(
+                                self.type_table.get(ty).clone(),
+                            )));
+
+                    self.assign_expression(operand, pointer_type);
+                }
+                UnaryOperatorKind::AddressOf => {
+                    // We know the type of this expression is a pointer, so make
+                    // sure the target type is also a pointer and coerce operand
+                    // to fit the pointed type
+
+                    let UniqueType::Pointer(pointed_type) = unique_type else {
+                        unreachable!();
+                    };
+
+                    self.assign_expression(
+                        operand,
+                        self.type_table.index_of(pointed_type).unwrap(),
+                    );
+                }
+                UnaryOperatorKind::LogicalNot
+                | UnaryOperatorKind::BitwiseNot
+                | UnaryOperatorKind::Negate => self.assign_expression(operand, ty),
+            },
+            HirExpressionKind::Cast { .. } => assert_eq!(expression.ty, ty),
+            HirExpressionKind::If {
+                condition,
+                ref mut positive,
+                ref mut negative,
+            } => {
+                self.assign_block(positive, ty);
+
+                if let Some(negative) = negative {
+                    self.assign_expression(negative, ty);
+                }
+            }
+            HirExpressionKind::While { condition, block } => todo!(),
+            HirExpressionKind::Assignment { kind, lhs, rhs } => assert_eq!(expression.ty, ty),
+            HirExpressionKind::Break => todo!(),
+            HirExpressionKind::Continue => todo!(),
+            HirExpressionKind::Return(hir_expression) => todo!(),
+        }
+
+        expression.ty = ty;
+    }
+
+    /// Given a known type for the block, will traverse backwards infering
+    /// correct types for all statements
+    fn assign_block(&mut self, block: &mut Block, ty: TypeId) {
+        let mut is_last = true;
+
+        for stmt in block.statements.iter_mut().rev() {
+            match stmt {
+                Statement::Local(local) => {
+                    let mut expected_type = *self.local_type_map.get(&local.id).unwrap();
+
+                    if expected_type == self.type_table.insert_if_absent(UniqueType::Integer) {
+                        expected_type = self.type_table.get_primitive(PrimitiveKind::I32);
+                        self.local_type_map.insert(local.id, expected_type);
+                    }
+
+                    if expected_type == self.type_table.insert_if_absent(UniqueType::Float) {
+                        expected_type = self.type_table.get_primitive(PrimitiveKind::F64);
+                        self.local_type_map.insert(local.id, expected_type);
+                    }
+
+                    println!(
+                        "infering local {} with type {} and expected type {}",
+                        local.name.value(),
+                        self.type_table.get(local.ty),
+                        self.type_table.get(expected_type)
+                    );
+
+                    if local.ty != expected_type {
+                        let HirLocalKind::Initialization(ref mut expr) = local.kind else {
+                            continue;
+                        };
+
+                        self.assign_expression(expr, expected_type);
+                        local.ty = expected_type;
+                    }
+                }
+                Statement::Expression(hir_expression) => {
+                    if !is_last {
+                        continue;
+                    }
+
+                    // TODO: infer types for assignment expressions
+
+                    self.assign_expression(hir_expression, ty);
+                    block.return_type = ty;
+                }
+            }
+
+            is_last = false;
         }
     }
 }
@@ -1069,6 +1461,9 @@ impl TypeTable {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UniqueType {
+    Unknown,
+    Integer,
+    Float,
     Primitive(PrimitiveKind),
     Pointer(Box<UniqueType>),
     Slice(Box<UniqueType>),
@@ -1089,6 +1484,9 @@ pub enum UniqueType {
 impl core::fmt::Display for UniqueType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            UniqueType::Unknown => write!(f, "{{unknown}}"),
+            UniqueType::Integer => write!(f, "{{integer}}"),
+            UniqueType::Float => write!(f, "{{float}}"),
             UniqueType::Primitive(kind) => write!(f, "{kind}"),
             UniqueType::Pointer(ty) => write!(f, "*{ty}"),
             UniqueType::Slice(ty) => write!(f, "[{ty}]"),
@@ -1097,6 +1495,50 @@ impl core::fmt::Display for UniqueType {
             UniqueType::Array { ty, length } => write!(f, "[{ty}; {length}]"),
             UniqueType::FunctionPointer { .. } => todo!("Format function pointers"),
             UniqueType::Any => write!(f, "*any"),
+        }
+    }
+}
+
+impl UniqueType {
+    fn is_ambiguous(&self) -> bool {
+        match self {
+            UniqueType::Unknown | UniqueType::Integer | UniqueType::Float => true,
+            UniqueType::Pointer(pointed) => pointed.is_ambiguous(),
+            _ => false,
+        }
+    }
+
+    fn can_coerce_into(&self, other: &Self) -> bool {
+        match self {
+            UniqueType::Integer => matches!(
+                other,
+                UniqueType::Primitive(
+                    PrimitiveKind::U8
+                        | PrimitiveKind::U16
+                        | PrimitiveKind::U32
+                        | PrimitiveKind::U64
+                        | PrimitiveKind::USize
+                        | PrimitiveKind::I8
+                        | PrimitiveKind::I16
+                        | PrimitiveKind::I32
+                        | PrimitiveKind::I64
+                        | PrimitiveKind::ISize
+                )
+            ),
+            UniqueType::Float => matches!(
+                other,
+                UniqueType::Primitive(PrimitiveKind::F32 | PrimitiveKind::F64)
+            ),
+            // For pointers, check that the other type is also a pointer and
+            // that the pointed-to types are coerceable
+            UniqueType::Pointer(pointed) => {
+                if let UniqueType::Pointer(other_pointed) = other {
+                    pointed.can_coerce_into(other_pointed)
+                } else {
+                    false
+                }
+            }
+            _ => false,
         }
     }
 }

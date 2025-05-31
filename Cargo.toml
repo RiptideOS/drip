@@ -1,7 +1,7 @@
 [package]
 name = "dripc"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Drip Language Bootstrap Compiler"
 authors = ["Adrian Wowk <dev@adrianwowk.com>"]
 license = "MIT"
@@ -10,6 +10,12 @@ readme = "README.md"
 
 [dependencies]
 clap = { version = "4.5.9", features = ["derive"] }
+colored = "3.0.0"
 itertools = "0.13.0"
 once_cell = "1.19.0"
 strum = { version = "0.26.3", features = ["derive"] }
+
+[features]
+default = ["error-backtrace"]
+
+error-backtrace = []

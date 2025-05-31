@@ -3,5 +3,13 @@ fn main() {
     let b = 2;
     let c = 3;
 
-    println("Output: {}", a + b * c);
+    u32 a = 1;
+
+    let d = 4;
+
+    println("Output: {}", a + b * c as i64);
+
+    let garbage_collected: &[i32] = new i32[100];
+
+    let not_gced: *i32 = calloc(i32, 100);
 }

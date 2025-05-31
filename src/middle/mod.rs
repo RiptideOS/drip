@@ -2,7 +2,8 @@
 //! made in this step like constant expression evaluation before being lowered
 //! and flattened to LIR.
 
+pub mod ast_lowering;
 pub mod hir;
-pub mod primitive;
 pub mod resolve;
-pub mod type_checker;
+pub mod primitive;
+// pub mod type_checker;

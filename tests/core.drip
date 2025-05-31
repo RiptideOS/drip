@@ -1,0 +1,4 @@
+@intrinsic
+fn println(message: str) {
+    // compiler built-in
+}

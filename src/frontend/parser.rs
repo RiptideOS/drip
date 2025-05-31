@@ -1,6 +1,9 @@
-use std::sync::atomic::{AtomicU32, Ordering};
-
+use super::{
+    ast::{AssignmentOperator, Item, ItemKind, NodeId},
+    intern::InternedSymbol,
+};
 use crate::frontend::{
+    SourceFile,
     ast::{
         AssignmentOperatorKind, BinaryOperator, BinaryOperatorKind, Block, Expression,
         ExpressionKind, FunctionCallArgumentList, FunctionDefinition, FunctionParameter,
@@ -9,10 +12,7 @@ use crate::frontend::{
         UnaryOperator, UnaryOperatorKind,
     },
     lexer::{Keyword, Lexer, Span, Token, TokenKind},
-    SourceFile,
 };
-
-use super::{ast::NodeId, intern::InternedSymbol};
 
 #[derive(Debug)]
 pub struct Parser<'source> {
@@ -20,30 +20,20 @@ pub struct Parser<'source> {
     next_node_id: u32,
 }
 
-#[derive(Debug)]
-enum ModuleItem {
-    FunctionDefinition(FunctionDefinition),
-}
-
-static GLOBAL_MODULE_ID_COUNTER: AtomicU32 = AtomicU32::new(0);
-
 impl<'source> Parser<'source> {
-    pub fn parse_module(source_file: &'source SourceFile) -> Module {
+    pub fn parse_module(source_file: &'source SourceFile) -> Module<'source> {
         let mut parser = Self {
             lexer: Lexer::new(source_file),
             next_node_id: 0,
         };
 
         let mut module = Module {
-            id: GLOBAL_MODULE_ID_COUNTER.fetch_add(1, Ordering::Relaxed),
             source_file,
-            function_definitions: Vec::new(),
+            items: Vec::new(),
         };
 
         while !parser.lexer.is_eof() && parser.lexer.peek().is_some() {
-            match parser.parse_module_item() {
-                ModuleItem::FunctionDefinition(f) => module.function_definitions.push(f),
-            }
+            module.items.push(parser.parse_module_item());
         }
 
         module
@@ -115,14 +105,20 @@ impl<'source> Parser<'source> {
         self.expect_next_to_be(TokenKind::Keyword(keyword))
     }
 
-    fn parse_module_item(&mut self) -> ModuleItem {
+    fn parse_module_item(&mut self) -> Item {
         let Some(peeked) = self.lexer.peek() else {
             self.report_fatal_error_old("Unexpected EOF while trying to parse module item")
         };
 
         match peeked.kind {
             TokenKind::Keyword(Keyword::Fn) => {
-                ModuleItem::FunctionDefinition(self.parse_function_definition())
+                let function = Box::new(self.parse_function_definition());
+
+                Item {
+                    id: self.create_node_id(),
+                    span: function.span,
+                    kind: ItemKind::FunctionDefinition(function),
+                }
             }
             _ => self.report_fatal_error_old(&format!(
                 "Expected function definition in module but found: {} ({:?})",
@@ -188,7 +184,9 @@ impl<'source> Parser<'source> {
 
     // std::fs::read_to_string
     fn parse_qualified_identifier(&mut self) -> QualifiedIdentifier {
-        let mut segments = vec![self.parse_identifier()];
+        // FIXME: rust-analyzer bug causing a false unsafe report??
+        #[allow(unused_unsafe)]
+        let mut segments = unsafe { vec![self.parse_identifier()] };
 
         // While the next token is a double colon try and parse more segments
         while self
@@ -338,45 +336,8 @@ impl<'source> Parser<'source> {
             todo!("Parse function pointer type")
         }
 
-        // Primitives, string slices, and C strings
-        let maybe_ident = self.expect_peek("identifier");
-        if maybe_ident.kind == TokenKind::Identifier {
-            let value = self.lexer.source().value_of_span(maybe_ident.span);
-
-            if let Ok(kind) = value.parse() {
-                let token = self.expect_next_to_be(TokenKind::Identifier);
-
-                return Type {
-                    id: self.create_node_id(),
-                    span: token.span,
-                    kind: TypeKind::Primitive(kind),
-                };
-            }
-
-            match value {
-                "str" => {
-                    let token = self.expect_next_to_be(TokenKind::Identifier);
-
-                    return Type {
-                        id: self.create_node_id(),
-                        span: token.span,
-                        kind: TypeKind::Str,
-                    };
-                }
-                "cstr" => {
-                    let token = self.expect_next_to_be(TokenKind::Identifier);
-
-                    return Type {
-                        id: self.create_node_id(),
-                        span: token.span,
-                        kind: TypeKind::CStr,
-                    };
-                }
-                _ => {}
-            }
-        }
-
         // Anything else must be a qualified identifier
+
         let qualified_identifier = self.parse_qualified_identifier();
 
         Type {
@@ -644,10 +605,10 @@ impl<'source> Parser<'source> {
         expression
     }
 
-    fn parse_assignment_operator(&mut self) -> Option<AssignmentOperatorKind> {
+    fn parse_assignment_operator(&mut self) -> Option<AssignmentOperator> {
         let operator = self.expect_next("assignment operator");
 
-        Some(match operator.kind {
+        let kind = match operator.kind {
             TokenKind::PlusEquals => AssignmentOperatorKind::Add,
             TokenKind::MinusEquals => AssignmentOperatorKind::Subtract,
             TokenKind::MultiplyEquals => AssignmentOperatorKind::Multiply,
@@ -661,6 +622,12 @@ impl<'source> Parser<'source> {
             TokenKind::ShiftLeftEquals => AssignmentOperatorKind::ShiftLeft,
             TokenKind::ShiftRightEquals => AssignmentOperatorKind::ShiftRight,
             _ => return None,
+        };
+
+        Some(AssignmentOperator {
+            id: self.create_node_id(),
+            span: operator.span,
+            kind,
         })
     }
 

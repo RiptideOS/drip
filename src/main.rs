@@ -1,14 +1,20 @@
+#![feature(decl_macro)]
+
 use std::path::PathBuf;
 
-use clap::{error::ErrorKind, CommandFactory, Parser as ClapParser};
-use middle::type_checker::TypeChecker;
+use clap::{CommandFactory, Parser as ClapParser, error::ErrorKind};
 
 use crate::{
-    frontend::{parser::Parser, SourceFile, SourceFileOrigin},
-    middle::resolve::Resolver,
+    frontend::{SourceFile, SourceFileOrigin, parser::Parser},
+    middle::{
+        ast_lowering::lower_to_hir,
+        // type_checker::TypeChecker
+    },
 };
 
+mod backend;
 mod frontend;
+mod index;
 mod middle;
 
 #[derive(Debug, ClapParser)]
@@ -19,9 +25,6 @@ pub struct Args {
 
 fn main() {
     let args = Args::parse();
-
-    let mut s = String::from("");
-    let m = s.as_mut_str().len();
 
     if args.source_files.is_empty() {
         Args::command()
@@ -66,16 +69,16 @@ fn main() {
         .collect::<Vec<_>>();
 
     for source_file in &source_files {
-        let module = Parser::parse_module(source_file);
+        // Construct AST from the source code
+        let ast = Parser::parse_module(source_file);
+        println!("{ast:#?}");
 
-        println!("{:#?}", module);
+        // Index AST and resolve names to produce HIR
+        let hir = lower_to_hir(&ast);
+        println!("{hir:#?}");
 
-        let name_resolutions = Resolver::resolve_names(&module);
+        // let hir_module = TypeChecker::type_check_module(&ast, &name_resolutions);
 
-        println!("{:#?}", name_resolutions);
-
-        let hir_module = TypeChecker::type_check_module(&module, &name_resolutions);
-
-        println!("{:#?}", hir_module);
+        // println!("{:#?}", hir_module);
     }
 }
