@@ -43,7 +43,7 @@ impl<'a, 'ast> ast::visit::Visitor<'ast> for AstIndexer<'a, 'ast> {
 pub fn index_hir(
     node: &hir::OwnerNode,
     node_count: usize,
-    body: Option<(hir::ItemLocalId, Rc<hir::Body>)>,
+    body: Option<Rc<hir::Body>>,
 ) -> (
     IndexVec<hir::ItemLocalId, hir::ParentedNode>,
     BTreeMap<hir::LocalDefId, hir::ItemLocalId>,
@@ -90,7 +90,7 @@ pub struct HirIndexer {
     parent_node: hir::ItemLocalId,
 
     owner: hir::LocalDefId,
-    body: Option<(hir::ItemLocalId, Rc<hir::Body>)>,
+    body: Option<Rc<hir::Body>>,
 }
 
 impl HirIndexer {
@@ -115,12 +115,12 @@ impl HirIndexer {
 }
 
 impl hir::visit::Visitor for HirIndexer {
-    fn visit_body(&mut self, body_id: hir::HirId) {
-        let Some((id, body)) = &self.body else {
+    fn visit_body(&mut self, body_id: hir::BodyId) {
+        let Some(body) = &self.body else {
             unreachable!()
         };
 
-        assert_eq!(*id, body_id.local_id);
+        assert_eq!(body.id(), body_id);
 
         hir::visit::walk_body(self, body.clone());
     }
@@ -129,8 +129,8 @@ impl hir::visit::Visitor for HirIndexer {
         assert_eq!(self.nodes.len(), 0);
         assert_eq!(self.parent_node, hir::ItemLocalId::INVALID);
 
-        self.insert(item.hir_id, hir::Node::Item(item.clone()));
-        self.with_parent(item.hir_id, |this| {
+        self.insert(item.hir_id(), hir::Node::Item(item.clone()));
+        self.with_parent(item.hir_id(), |this| {
             hir::visit::walk_item(this, item);
         });
     }

@@ -23,7 +23,7 @@ pub struct ItemLoweringContext<'a, 'ast> {
     // Context specific to this owner
     owner_id: hir::LocalDefId,
     next_local_id: hir::ItemLocalId,
-    body: Option<(hir::ItemLocalId, Rc<hir::Body>)>,
+    body: Option<Rc<hir::Body>>,
     /// Maps IDs of local (let) bindings to their allocated hir item local ids
     local_id_map: BTreeMap<ast::NodeId, hir::ItemLocalId>,
 }
@@ -51,11 +51,11 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
         id
     }
 
-    fn set_body(&mut self, body: hir::Body) -> hir::HirId {
+    fn set_body(&mut self, body: hir::Body) -> hir::BodyId {
         assert!(self.body.is_none(), "tried to set body more than once");
 
         let body_id = body.id();
-        self.body = Some((body_id.local_id, Rc::new(body)));
+        self.body = Some(Rc::new(body));
         body_id
     }
 
@@ -79,7 +79,7 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
         };
 
         Rc::new(hir::Item {
-            hir_id: hir::HirId::from_def_id(self.owner_id),
+            owner_id: self.owner_id,
             kind,
             span: item.span,
         })

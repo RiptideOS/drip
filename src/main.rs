@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{CommandFactory, Parser as ClapParser, error::ErrorKind};
+use middle::type_checking::type_check_module;
 
 use crate::{
     frontend::{SourceFile, SourceFileOrigin, parser::Parser},
@@ -77,8 +78,6 @@ fn main() {
         let hir = lower_to_hir(&ast);
         println!("{hir:#?}");
 
-        // let hir_module = TypeChecker::type_check_module(&ast, &name_resolutions);
-
-        // println!("{:#?}", hir_module);
+        type_check_module(&hir);
     }
 }

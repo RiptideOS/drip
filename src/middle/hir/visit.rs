@@ -11,7 +11,7 @@
 use std::rc::Rc;
 
 use super::{
-    Block, Body, Expression, ExpressionKind, FunctionParameter, FunctionSignature, HirId,
+    Block, Body, BodyId, Expression, ExpressionKind, FunctionParameter, FunctionSignature,
     Identifier, Item, ItemKind, LetStatement, Literal, Module, OwnerNode, Path, PathSegment,
     Statement, StatementKind, Type, TypeKind,
 };
@@ -25,7 +25,7 @@ pub trait Visitor: Sized {
         &mut self,
         name: &Identifier,
         signature: &FunctionSignature,
-        body: HirId,
+        body: BodyId,
     ) {
         walk_function_definition(self, name, signature, body)
     }
@@ -52,8 +52,8 @@ pub trait Visitor: Sized {
         walk_path_segment(self, segment)
     }
 
-    fn visit_body(&mut self, body_id: HirId) {
-        todo!()
+    fn visit_body(&mut self, _body_id: BodyId) {
+        panic!("must be overridden if used to allow resolving body ids")
     }
 
     fn visit_block(&mut self, block: Rc<Block>) {
@@ -75,7 +75,7 @@ pub trait Visitor: Sized {
     fn visit_literal(&mut self, _literal: &Literal) {}
 }
 
-pub fn walk_module(visitor: &mut impl Visitor, module: Rc<Module>) {
+pub fn walk_module(visitor: &mut impl Visitor, module: &Module) {
     for owner in module.owners.iter() {
         match owner.node() {
             OwnerNode::Item(item) => {
@@ -99,7 +99,7 @@ pub fn walk_function_definition(
     visitor: &mut impl Visitor,
     name: &Identifier,
     signature: &FunctionSignature,
-    body: HirId,
+    body: BodyId,
 ) {
     visitor.visit_identifier(name);
     visitor.visit_function_signature(signature);

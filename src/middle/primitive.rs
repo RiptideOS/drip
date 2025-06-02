@@ -21,7 +21,7 @@ pub enum PrimitiveKind {
     CStr,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter)]
 #[strum(serialize_all = "lowercase")]
 pub enum IntKind {
     I8,
@@ -31,7 +31,7 @@ pub enum IntKind {
     ISize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq,  Hash, Display, EnumString, EnumIter)]
 #[strum(serialize_all = "lowercase")]
 pub enum UIntKind {
     U8,
@@ -41,7 +41,7 @@ pub enum UIntKind {
     USize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq,  Hash, Display, EnumString, EnumIter)]
 #[strum(serialize_all = "lowercase")]
 pub enum FloatKind {
     F32,

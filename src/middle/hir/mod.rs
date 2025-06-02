@@ -28,6 +28,47 @@ pub struct Module {
     pub owners: IndexVec<LocalDefId, Owner>,
 }
 
+impl Module {
+    pub fn get_body(&self, id: BodyId) -> Rc<Body> {
+        let owner = &self.owners[id.hir_id.owner];
+
+        let Some(body) = &owner.body else {
+            panic!("invalid body id");
+        };
+
+        assert_eq!(body.id(), id, "invalid body id");
+
+        body.clone()
+    }
+
+    pub fn get_bodies(&self) -> impl Iterator<Item = BodyId> {
+        self.owners
+            .iter()
+            .flat_map(|owner| owner.body.as_ref().map(|b| b.id()))
+    }
+
+    pub fn get_owner(&self, def_id: LocalDefId) -> &Owner {
+        &self.owners[def_id]
+    }
+
+    pub fn get_owners(&self) -> impl Iterator<Item = LocalDefId> {
+        self.owners.indices()
+    }
+
+    /// Finds the parent of the provided node in the tree. Returns None if the
+    /// requested ID is an owner and this has no parent
+    pub fn get_parent_of(&self, hir_id: HirId) -> Option<Node> {
+        let owner = &self.owners[hir_id.owner];
+        let node = &owner.nodes[hir_id.local_id];
+
+        if node.parent == ItemLocalId::INVALID {
+            None
+        } else {
+            Some(owner.nodes[node.parent].node.clone())
+        }
+    }
+}
+
 /// Represents a top level owner within a module. HIR owners may be nested
 #[derive(Debug)]
 pub struct Owner {
@@ -41,9 +82,8 @@ pub struct Owner {
     /// Map from nested owners to their local ID within this owner
     pub parenting: BTreeMap<LocalDefId, ItemLocalId>,
     /// If present, the executable body within the owner. Will not be set for
-    /// items like type definitions. The LocalId is the id of the expression
-    /// represented by the body.
-    pub body: Option<(ItemLocalId, Rc<Body>)>,
+    /// items like type definitions.
+    pub body: Option<Rc<Body>>,
 }
 
 impl Owner {
@@ -82,18 +122,6 @@ pub enum Node {
     PathSegment(Rc<PathSegment>),
 }
 
-#[derive(Debug, Clone)]
-pub enum NodeRef<'a> {
-    Item(&'a Item),
-    FunctionParameter(&'a FunctionParameter),
-    Expression(&'a Expression),
-    Block(&'a Block),
-    Statement(&'a Statement),
-    LetStatement(&'a LetStatement),
-    Type(&'a Type),
-    PathSegment(&'a PathSegment),
-}
-
 impl Node {
     pub fn as_owner(self) -> Option<OwnerNode> {
         match self {
@@ -108,29 +136,23 @@ impl Node {
         }
     }
 
-    pub fn as_ref(&self) -> NodeRef<'_> {
+    pub fn id(&self) -> HirId {
         match self {
-            Node::Item(rc) => NodeRef::Item(&rc),
-            Node::FunctionParameter(rc) => NodeRef::FunctionParameter(&rc),
-            Node::Expression(rc) => NodeRef::Expression(&rc),
-            Node::Block(rc) => NodeRef::Block(&rc),
-            Node::Statement(rc) => NodeRef::Statement(&rc),
-            Node::LetStatement(rc) => NodeRef::LetStatement(&rc),
-            Node::Type(rc) => NodeRef::Type(&rc),
-            Node::PathSegment(rc) => NodeRef::PathSegment(&rc),
+            Node::Item(v) => v.hir_id(),
+            Node::FunctionParameter(v) => v.hir_id,
+            Node::Expression(v) => v.hir_id,
+            Node::Block(v) => v.hir_id,
+            Node::Statement(v) => v.hir_id,
+            Node::LetStatement(v) => v.hir_id,
+            Node::Type(v) => v.hir_id,
+            Node::PathSegment(v) => v.hir_id,
         }
     }
 
-    pub fn id(&self) -> HirId {
-        match self.as_ref() {
-            NodeRef::Item(Item { hir_id, .. })
-            | NodeRef::FunctionParameter(FunctionParameter { hir_id, .. })
-            | NodeRef::Expression(Expression { hir_id, .. })
-            | NodeRef::Block(Block { hir_id, .. })
-            | NodeRef::Statement(Statement { hir_id, .. })
-            | NodeRef::LetStatement(LetStatement { hir_id, .. })
-            | NodeRef::Type(Type { hir_id, .. })
-            | NodeRef::PathSegment(PathSegment { hir_id, .. }) => *hir_id,
+    pub fn as_item(&self) -> Option<Rc<Item>> {
+        match self {
+            Node::Item(item) => Some(item.clone()),
+            _ => None,
         }
     }
 }
@@ -148,7 +170,13 @@ pub enum OwnerNode {
 impl OwnerNode {
     pub fn hir_id(&self) -> HirId {
         match self {
-            OwnerNode::Item(item) => item.hir_id,
+            OwnerNode::Item(item) => item.hir_id(),
+        }
+    }
+
+    pub fn as_item(&self) -> Option<Rc<Item>> {
+        match self {
+            Self::Item(item) => Some(item.clone()),
         }
     }
 }
@@ -169,9 +197,15 @@ pub struct Identifier {
 
 #[derive(Debug, Clone)]
 pub struct Item {
-    pub hir_id: HirId,
+    pub owner_id: LocalDefId,
     pub kind: ItemKind,
     pub span: Span,
+}
+
+impl Item {
+    pub fn hir_id(&self) -> HirId {
+        HirId::from_def_id(self.owner_id)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -179,7 +213,7 @@ pub enum ItemKind {
     Function {
         name: Identifier,
         signature: FunctionSignature,
-        body: HirId,
+        body: BodyId,
     },
     // TODO: structs, enums, unions, static, const, type alias, submodule, impl
 }
@@ -205,8 +239,10 @@ pub struct Body {
 }
 
 impl Body {
-    pub fn id(&self) -> HirId {
-        self.block.hir_id
+    pub fn id(&self) -> BodyId {
+        BodyId {
+            hir_id: self.block.hir_id,
+        }
     }
 }
 

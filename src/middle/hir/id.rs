@@ -44,3 +44,15 @@ impl HirId {
         }
     }
 }
+
+impl From<HirId> for ItemLocalId {
+    fn from(value: HirId) -> Self {
+        value.local_id
+    }
+}
+
+/// An ID specifically identifying bodies within the HIR.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
+pub struct BodyId {
+    pub hir_id: HirId,
+}
