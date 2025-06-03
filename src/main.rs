@@ -78,6 +78,7 @@ fn main() {
         let hir = lower_to_hir(&ast);
         println!("{hir:#?}");
 
-        type_check_module(&hir);
+        let types = type_check_module(&hir);
+        println!("{types:#?}");
     }
 }

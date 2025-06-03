@@ -15,10 +15,13 @@ mod private {
 
 /// Thin pointer to an interned type kind. Do not construct directly. Instead,
 /// use [`TypeContext::insert_type`]
+///
+/// FIXME: we could use referential equality here since types are intered and
+/// guaranteed to be unique
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Type(Rc<TypeKind>, private::PrivateZst);
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeKind {
     /// !
     Never,
@@ -75,7 +78,7 @@ pub enum TypeKind {
     Infer(TypeVariable),
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TypeVariable {
     Int(IntVariableId),
     Float(FloatVariableId),

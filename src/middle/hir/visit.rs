@@ -126,7 +126,7 @@ pub fn walk_function_parameter(visitor: &mut impl Visitor, parameter: Rc<Functio
 
 pub fn walk_type(visitor: &mut impl Visitor, ty: Rc<Type>) {
     match &ty.kind {
-        TypeKind::Path(path) => visitor.visit_path(&path),
+        TypeKind::Path(path) => visitor.visit_path(path),
         TypeKind::Pointer(ty) => visitor.visit_type(ty.clone()),
         TypeKind::Slice(ty) => visitor.visit_type(ty.clone()),
         TypeKind::Array { ty, .. } => visitor.visit_type(ty.clone()),

@@ -23,14 +23,21 @@
 
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
-use hashbrown::HashSet;
+use hashbrown::{HashMap, HashSet};
 use ty::{FloatVariableId, IntVariableId, Type, TypeKind};
 
 use super::{
     hir::{self, Module, OwnerNode},
     primitive::{PrimitiveKind, UIntKind},
 };
-use crate::index::Index;
+use crate::{
+    frontend::lexer::Span,
+    index::Index,
+    middle::{
+        hir::{HirId, LocalDefId},
+        type_checking::ty::TypeVariable,
+    },
+};
 
 pub mod ty;
 
@@ -154,29 +161,70 @@ struct BodyTypeChecker<'tcx, 'hir> {
     type_context: &'tcx mut TypeContext<'hir>,
     owner_id: hir::LocalDefId,
 
-    /// Stores what types we've assigned to HIR nodes so far. We use an
-    /// Rc<RefCell<Type>> so that once we determine the type of a variable
-    /// through inference, we can update all references to that type.
-    node_to_type_map: BTreeMap<hir::ItemLocalId, Rc<RefCell<Type>>>,
+    /// Stores what types we've assigned to HIR nodes so far. This is
+    /// effectively the type environment Γ from type theory just without using
+    /// the names directlt (resolved during ast lowering)
+    node_to_type_map: BTreeMap<hir::ItemLocalId, Type>,
+
+    /// A list of accumulated constraints on the existing free type variables
+    constraints: Vec<TypeConstraint>,
 
     next_integer_variable_id: IntVariableId,
     next_float_variable_id: FloatVariableId,
 }
 
+#[derive(Debug)]
+struct TypeConstraint {
+    left: Type,
+    right: Type,
+    origin: TypeConstraintOrigin,
+}
+
+#[derive(Debug)]
+struct TypeConstraintOrigin {
+    /// The span enclosing the entire node which generated the constraint in the
+    /// original traversal
+    span: Span,
+    /// Used to format error messages better
+    kind: TypeBoundary,
+}
+
+/// A kind of place in the source code where a constraint may be generated
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypeBoundary {
+    /// If an explicit type is specified for a let binding, the expression must
+    /// have that type
+    LetStatement,
+    /// Function argument type must match function paramter type
+    FunctionArgument,
+    /// Cast operand must match target type
+    Cast,
+    /// If conditions must be the bool type
+    IfCondition,
+    /// Blocks of an if statement must have the same type
+    IfBlock,
+    /// While conditions must be the bool type
+    WhileCondition,
+    /// Bare expressions in a block which are not the last in the block must
+    /// have be unit type
+    BareExpression,
+    /// Sides of binary op must have the same type
+    BinaryOp,
+    /// Sides of assignment must have the same type
+    Assignment,
+    /// Sides of op assignment must have the same type
+    OpAssignment,
+}
+
 impl<'tcx, 'hir> BodyTypeChecker<'tcx, 'hir> {
-    fn insert_type(&mut self, hir_id: hir::HirId, ty: Type) -> Rc<RefCell<Type>> {
+    fn insert_type(&mut self, hir_id: hir::HirId, ty: Type) -> Type {
         assert_eq!(hir_id.owner, self.owner_id);
 
-        let ty = Rc::new(RefCell::new(ty));
         self.node_to_type_map.insert(hir_id.local_id, ty.clone());
         ty
     }
 
-    fn copy_type_from(
-        &mut self,
-        dest_id: hir::HirId,
-        src_id: impl Into<hir::ItemLocalId>,
-    ) -> Rc<RefCell<Type>> {
+    fn copy_type_from(&mut self, dest_id: hir::HirId, src_id: impl Into<hir::ItemLocalId>) -> Type {
         assert_eq!(dest_id.owner, self.owner_id);
 
         let shared = self.node_to_type_map[&src_id.into()].clone();
@@ -185,20 +233,33 @@ impl<'tcx, 'hir> BodyTypeChecker<'tcx, 'hir> {
         shared
     }
 
-    fn get_type(&mut self, id: impl Into<hir::ItemLocalId>) -> Rc<RefCell<Type>> {
+    fn get_type(&mut self, id: impl Into<hir::ItemLocalId>) -> Type {
         self.node_to_type_map[&id.into()].clone()
     }
 
-    fn next_integer_id(&mut self) -> IntVariableId {
-        let id = self.next_integer_variable_id;
-        self.next_integer_variable_id.increment_by(1);
-        id
+    /// Adds a constraint that the left type should equal the right type
+    fn create_type_constraint(&mut self, left: Type, right: Type, origin: TypeConstraintOrigin) {
+        self.constraints.push(TypeConstraint {
+            left,
+            right,
+            origin,
+        });
     }
 
-    fn next_float_id(&mut self) -> FloatVariableId {
+    fn create_fresh_integer_var(&mut self) -> Type {
+        let id = self.next_integer_variable_id;
+        self.next_integer_variable_id.increment_by(1);
+
+        self.type_context
+            .intern_type(TypeKind::Infer(TypeVariable::Int(id)))
+    }
+
+    fn create_fresh_float_var(&mut self) -> Type {
         let id = self.next_float_variable_id;
         self.next_float_variable_id.increment_by(1);
-        id
+
+        self.type_context
+            .intern_type(TypeKind::Infer(TypeVariable::Float(id)))
     }
 
     fn compute_type_for_literal(&mut self, literal: &hir::Literal) -> Type {
@@ -212,21 +273,13 @@ impl<'tcx, 'hir> BodyTypeChecker<'tcx, 'hir> {
                 hir::LiteralIntegerKind::Signed(int_kind) => self
                     .type_context
                     .get_primitive_type(PrimitiveKind::Int(*int_kind)),
-                hir::LiteralIntegerKind::Unsuffixed => {
-                    let id = self.next_integer_id();
-                    self.type_context
-                        .intern_type(TypeKind::Infer(ty::TypeVariable::Int(id)))
-                }
+                hir::LiteralIntegerKind::Unsuffixed => self.create_fresh_integer_var(),
             },
             hir::Literal::Float(_, literal_float_kind) => match literal_float_kind {
                 hir::LiteralFloatKind::Suffixed(float_kind) => self
                     .type_context
                     .get_primitive_type(PrimitiveKind::Float(*float_kind)),
-                hir::LiteralFloatKind::Unsuffixed => {
-                    let id = self.next_float_id();
-                    self.type_context
-                        .intern_type(TypeKind::Infer(ty::TypeVariable::Float(id)))
-                }
+                hir::LiteralFloatKind::Unsuffixed => self.create_fresh_float_var(),
             },
             hir::Literal::String(_) => self.type_context.get_primitive_type(PrimitiveKind::Str),
             hir::Literal::ByteString(_) => {
@@ -238,6 +291,231 @@ impl<'tcx, 'hir> BodyTypeChecker<'tcx, 'hir> {
             hir::Literal::CString(_) => self.type_context.get_primitive_type(PrimitiveKind::CStr),
         }
     }
+
+    fn unify_constraints(&mut self) -> Result<SubstitutionMap, Vec<TypeError>> {
+        let mut substitution_map = SubstitutionMap::new();
+        let mut errors = vec![];
+
+        for TypeConstraint {
+            left,
+            right,
+            origin,
+        } in core::mem::take(&mut self.constraints)
+        {
+            match self.unify(left, right, &mut substitution_map) {
+                Ok(_) => {}
+                Err(e) => errors.push(TypeError { origin, kind: e }),
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(substitution_map)
+        } else {
+            Err(errors)
+        }
+    }
+
+    fn unify(
+        &mut self,
+        t1: Type,
+        t2: Type,
+        substitution_map: &mut SubstitutionMap,
+    ) -> Result<(), TypeErrorKind> {
+        let t1 = self.apply_substitution(substitution_map, t1);
+        let t2 = self.apply_substitution(substitution_map, t2);
+
+        match (&*t1, &*t2) {
+            // Both same type variable
+            (TypeKind::Infer(id1), TypeKind::Infer(id2)) if id1 == id2 => Ok(()),
+
+            // One is an integral inference type and one is an integer type
+            (TypeKind::Infer(TypeVariable::Int(id)), ty @ TypeKind::Integer(_))
+            | (ty @ TypeKind::Integer(_), TypeKind::Infer(TypeVariable::Int(id))) => {
+                // It is guaranteed that this type is already interned, but I
+                // cant figure out a nicer way to write this
+                let ty = self.type_context.intern_type(ty.clone());
+                let variable = TypeVariable::Int(*id);
+
+                if self.occurs_in(variable, ty.clone(), substitution_map) {
+                    return Err(TypeErrorKind::InfinitelyRecursiveType { variable, ty });
+                }
+
+                substitution_map.int_map.insert(*id, ty);
+                Ok(())
+            }
+
+            // One is a float inference type and one is an float type
+            (TypeKind::Infer(TypeVariable::Float(id)), ty @ TypeKind::Float(_))
+            | (ty @ TypeKind::Float(_), TypeKind::Infer(TypeVariable::Float(id))) => {
+                // It is guaranteed that this type is already interned, but I
+                // cant figure out a nicer way to write this
+                let ty = self.type_context.intern_type(ty.clone());
+                let variable = TypeVariable::Float(*id);
+
+                if self.occurs_in(variable, ty.clone(), substitution_map) {
+                    return Err(TypeErrorKind::InfinitelyRecursiveType { variable, ty });
+                }
+
+                substitution_map.float_map.insert(*id, ty);
+                Ok(())
+            }
+
+            // Both same concrete type
+            (t1, t2) if t1 == t2 => Ok(()),
+
+            // Any other type combination
+            _ => Err(TypeErrorKind::Mismatch {
+                expected: t1,
+                actual: t2,
+            }),
+        }
+    }
+
+    fn occurs_in(
+        &mut self,
+        var: TypeVariable,
+        ty: Type,
+        substitution_map: &SubstitutionMap,
+    ) -> bool {
+        match &*self.apply_substitution(substitution_map, ty) {
+            TypeKind::Infer(id) => *id == var,
+            TypeKind::Pointer(inner)
+            | TypeKind::Slice(inner)
+            | TypeKind::Array { ty: inner, .. } => {
+                self.occurs_in(var, inner.clone(), substitution_map)
+            }
+            TypeKind::FunctionPointer {
+                parameters,
+                return_type,
+                ..
+            } => {
+                parameters
+                    .iter()
+                    .any(|ty| self.occurs_in(var, ty.clone(), substitution_map))
+                    || self.occurs_in(var, return_type.clone(), substitution_map)
+            }
+            _ => false,
+        }
+    }
+
+    /// Recursively applies substitutions to the provided type to generate a new
+    /// type with less or ideally no type variables
+    fn apply_substitution(&mut self, substitution_map: &SubstitutionMap, ty: Type) -> Type {
+        match &*ty {
+            TypeKind::Infer(TypeVariable::Int(id)) => {
+                if let Some(t) = substitution_map.int_map.get(id) {
+                    self.apply_substitution(substitution_map, t.clone())
+                } else {
+                    ty
+                }
+            }
+            TypeKind::Infer(TypeVariable::Float(id)) => {
+                if let Some(t) = substitution_map.float_map.get(id) {
+                    self.apply_substitution(substitution_map, t.clone())
+                } else {
+                    ty
+                }
+            }
+            TypeKind::Pointer(inner) => {
+                let substituted = self.apply_substitution(substitution_map, inner.clone());
+                self.type_context
+                    .intern_type(TypeKind::Pointer(substituted))
+            }
+            TypeKind::Slice(inner) => {
+                let substituted = self.apply_substitution(substitution_map, inner.clone());
+                self.type_context.intern_type(TypeKind::Slice(substituted))
+            }
+            TypeKind::Array { ty: inner, length } => {
+                let substituted = self.apply_substitution(substitution_map, inner.clone());
+                self.type_context.intern_type(TypeKind::Array {
+                    ty: substituted,
+                    length: *length,
+                })
+            }
+            TypeKind::FunctionPointer {
+                parameters,
+                return_type,
+                is_variadic,
+            } => {
+                let parameters = parameters
+                    .iter()
+                    .map(|ty| self.apply_substitution(substitution_map, ty.clone()))
+                    .collect();
+                let return_type = self.apply_substitution(substitution_map, return_type.clone());
+
+                self.type_context.intern_type(TypeKind::FunctionPointer {
+                    parameters,
+                    return_type,
+                    is_variadic: *is_variadic,
+                })
+            }
+            _ => ty,
+        }
+    }
+
+    /// Attempts to solve type constraints, returning type check results if it
+    /// was able to do so successfully
+    pub fn into_output(mut self) -> Result<TypeCheckResults, Vec<TypeError>> {
+        // Solve the collected constraints
+        let substitution_map = self.unify_constraints()?;
+
+        // FIXME: we could optimize this by first only applying substitutions to
+        // the set of unique types, create a map of the resulting substitutions,
+        // and then apply those computed recursive substitutions to all the
+        // types in the node type map.
+
+        // Apply all the substitutions we calcualted to all the nodes in the type
+        let mut node_types = core::mem::take(&mut self.node_to_type_map);
+
+        for ty in node_types.values_mut() {
+            *ty = self.apply_substitution(&substitution_map, ty.clone());
+        }
+
+        // TODO: assert that no more type variables exist in the resulting
+        // type, or apply default substitutions like i32 for integers and
+        // f32 for floats. we could do this by collecting the remaining free
+        // type variables and creating a new substitution map with default
+        // substitutions and then applying that again to all the types or only
+        // the types we know are still unconstrained
+
+        Ok(TypeCheckResults {
+            owner_id: self.owner_id,
+            node_types,
+        })
+    }
+}
+
+struct SubstitutionMap {
+    int_map: HashMap<IntVariableId, Type>,
+    float_map: HashMap<FloatVariableId, Type>,
+}
+
+impl SubstitutionMap {
+    fn new() -> Self {
+        Self {
+            int_map: HashMap::new(),
+            float_map: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TypeError {
+    origin: TypeConstraintOrigin,
+    kind: TypeErrorKind,
+}
+
+#[derive(Debug)]
+enum TypeErrorKind {
+    /// The expected type did not match the actual type we found in that
+    /// position (semantics depend a lot on the constraint origin which caused
+    /// this error)
+    Mismatch { expected: Type, actual: Type },
+    /// A type variable whose type contains itself. Not sure if this is actually
+    /// possible to happen in our type system, but maybe it could happen in the
+    /// future depending on the features we add so its good to implement it
+    /// early on
+    InfinitelyRecursiveType { variable: TypeVariable, ty: Type },
 }
 
 impl<'tcx, 'hir> hir::visit::Visitor for BodyTypeChecker<'tcx, 'hir> {
@@ -269,7 +547,7 @@ impl<'tcx, 'hir> hir::visit::Visitor for BodyTypeChecker<'tcx, 'hir> {
         //   1) no type no   initializer -> recoverable error
         //   2)    type no   initializer -> assign type to binding
         //   3) no type with initializer -> assign initializer type to binding
-        //   4)    type with initializer -> assign type to binding + recoverable error if initializer does not match
+        //   4)    type with initializer -> assign type to binding + add constraint on initializer
 
         hir::visit::walk_let_statement(self, let_stmt.clone());
 
@@ -295,29 +573,15 @@ impl<'tcx, 'hir> hir::visit::Visitor for BodyTypeChecker<'tcx, 'hir> {
                     .insert(let_stmt.hir_id.local_id, explicit);
             }
             (Some(explicit), Some(initializer)) => {
-                // This is a "type boundary" since we have both a known concrete
-                // type and a potentially inferred type that have to compare equal
-
-                // 3 cases:
-                //   1) both types are the same -> assign either to the let stmt
-                //   2) initializer is can be inferred into the explicit type -> update initializer and assign explicit type to let stmt
-                //   3) initializer can't be inferred into the explicit type -> throw a recoverable error
-
-                let e = explicit.borrow().clone();
-                let i = initializer.borrow().clone();
-
-                if e == i {
-                    // Don't need to do anything here
-                } else if i.can_infer_into(&e) {
-                    // Replace the initializer type with the explicit type
-                    let mut i = initializer.borrow_mut();
-                    *i = e;
-                } else {
-                    todo!("report error")
-                }
-
-                self.node_to_type_map
-                    .insert(let_stmt.hir_id.local_id, explicit);
+                self.create_type_constraint(
+                    explicit.clone(),
+                    initializer,
+                    TypeConstraintOrigin {
+                        span: let_stmt.span,
+                        kind: TypeBoundary::LetStatement,
+                    },
+                );
+                self.insert_type(let_stmt.hir_id, explicit);
             }
         }
     }
@@ -338,7 +602,23 @@ impl<'tcx, 'hir> hir::visit::Visitor for BodyTypeChecker<'tcx, 'hir> {
                 hir::Resolution::Local(local_id) => {
                     self.copy_type_from(expression.hir_id, *local_id);
                 }
-                hir::Resolution::IntrinsicFunction => todo!("resolve type of intrinsic function"),
+                hir::Resolution::IntrinsicFunction => {
+                    let ty = match path.segments.last().unwrap().identifier.symbol.value() {
+                        "println" => {
+                            let unit = self.type_context.get_unit_type();
+                            let string = self.type_context.get_primitive_type(PrimitiveKind::Str);
+
+                            self.type_context.intern_type(TypeKind::FunctionPointer {
+                                parameters: [string].into(),
+                                return_type: unit,
+                                is_variadic: true,
+                            })
+                        }
+                        _ => unreachable!(),
+                    };
+
+                    self.insert_type(expression.hir_id, ty);
+                }
                 _ => unreachable!("encountered type resolution in value namespace"),
             },
             hir::ExpressionKind::Block(block) => {
@@ -347,10 +627,59 @@ impl<'tcx, 'hir> hir::visit::Visitor for BodyTypeChecker<'tcx, 'hir> {
                 // TODO: check that bare expressions in the middle of the block
                 // have a unit return type. put this in visit_block?
             }
-            hir::ExpressionKind::FunctionCall { target, arguments } => todo!(),
+            hir::ExpressionKind::FunctionCall { target, arguments } => {
+                // check that the target of the call is a function pointer
+
+                let TypeKind::FunctionPointer {
+                    parameters,
+                    return_type,
+                    is_variadic,
+                } = &*self.get_type(target.hir_id)
+                else {
+                    todo!(
+                        "report error: function call expression requires that target type be a function pointer"
+                    )
+                };
+
+                // check that argument types match the target's call signature
+                for (parameter_ty, argument) in parameters.iter().zip(arguments.iter()) {
+                    let argument_ty = self.get_type(argument.hir_id);
+
+                    self.create_type_constraint(
+                        parameter_ty.clone(),
+                        argument_ty,
+                        TypeConstraintOrigin {
+                            span: argument.span,
+                            kind: TypeBoundary::FunctionArgument,
+                        },
+                    );
+
+                    // TODO: respect permitence of variadic arguments, but
+                    // require them to be concrete types if present
+                }
+
+                // expression has the same type as the function's return type
+                self.insert_type(expression.hir_id, return_type.clone());
+            }
             hir::ExpressionKind::Binary { lhs, operator, rhs } => todo!(),
             hir::ExpressionKind::Unary { operator, operand } => todo!(),
-            hir::ExpressionKind::Cast { expression, ty } => todo!(),
+            hir::ExpressionKind::Cast {
+                expression: castee,
+                ty,
+            } => {
+                let castee_ty = self.get_type(castee.hir_id);
+                let target_ty = self.get_type(ty.hir_id);
+
+                self.create_type_constraint(
+                    target_ty.clone(),
+                    castee_ty,
+                    TypeConstraintOrigin {
+                        span: expression.span,
+                        kind: TypeBoundary::Cast,
+                    },
+                );
+                self.insert_type(expression.hir_id, target_ty);
+            }
             hir::ExpressionKind::If {
                 condition,
                 positive,
@@ -362,6 +691,8 @@ impl<'tcx, 'hir> hir::visit::Visitor for BodyTypeChecker<'tcx, 'hir> {
             hir::ExpressionKind::Break => todo!(),
             hir::ExpressionKind::Continue => todo!(),
             hir::ExpressionKind::Return(_) => {
+                // TODO: check that return type matches current body return type
+
                 let ty = self.type_context.get_primitive_type(PrimitiveKind::Never);
                 self.insert_type(expression.hir_id, ty);
             }
@@ -369,7 +700,19 @@ impl<'tcx, 'hir> hir::visit::Visitor for BodyTypeChecker<'tcx, 'hir> {
     }
 }
 
-pub fn type_check_module(module: &hir::Module) {
+#[derive(Debug)]
+
+pub struct ModuleTypeCheckResults {
+    item_results: BTreeMap<hir::LocalDefId, TypeCheckResults>,
+}
+
+#[derive(Debug)]
+pub struct TypeCheckResults {
+    owner_id: hir::LocalDefId,
+    node_types: BTreeMap<hir::ItemLocalId, Type>,
+}
+
+pub fn type_check_module(module: &hir::Module) -> ModuleTypeCheckResults {
     let mut ctx = TypeContext::new(module);
 
     // Compute types for top level items we might reference in body contexts
@@ -378,17 +721,35 @@ pub fn type_check_module(module: &hir::Module) {
     };
     hir::visit::walk_module(&mut global_indexer, module);
 
+    let mut results = ModuleTypeCheckResults {
+        item_results: BTreeMap::new(),
+    };
+
     // Check the content of bodies and assign types to all nodes
     for owner_id in module.get_owners() {
         let mut body_ctx = BodyTypeChecker {
             type_context: &mut ctx,
             owner_id,
             node_to_type_map: BTreeMap::new(),
+            constraints: Vec::new(),
             next_integer_variable_id: IntVariableId::new(0),
             next_float_variable_id: FloatVariableId::new(0),
         };
 
         let OwnerNode::Item(item) = module.get_owner(owner_id).node();
         hir::visit::walk_item(&mut body_ctx, item);
+
+        println!("{:#?}", body_ctx.constraints);
+
+        match body_ctx.into_output() {
+            Ok(output) => {
+                results.item_results.insert(owner_id, output);
+            }
+            Err(errors) => {
+                todo!("report errors: {errors:#?}")
+            }
+        }
     }
+
+    results
 }

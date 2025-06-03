@@ -408,9 +408,11 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
             }
             ast::LiteralKind::Byte => {
                 // TODO: parse escaped byte chars like b'\n' which may be
-                // multiple characters
+                // multiple characters. should the parser do this for us?
 
-                assert_eq!(value.chars().count(), 1);
+                let v = &value[2..value.len() - 1];
+
+                assert_eq!(v.chars().count(), 1);
                 hir::Literal::Integer(
                     value.chars().next().unwrap() as _,
                     hir::LiteralIntegerKind::Unsigned(UIntKind::U8),
@@ -418,9 +420,11 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
             }
             ast::LiteralKind::Char => {
                 // TODO: parse escaped chars like '\n' which may be multiple
-                // characters
+                // characters. should the parser do this for us?
 
-                assert_eq!(value.chars().count(), 1);
+                let v = &value[1..value.len() - 1];
+
+                assert_eq!(v.chars().count(), 1);
                 hir::Literal::Char(value.chars().next().unwrap())
             }
             ast::LiteralKind::Integer => {
@@ -435,6 +439,8 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
                 // TODO: detect suffix (should parser do this?)
                 hir::Literal::Float(literal.symbol, hir::LiteralFloatKind::Unsuffixed)
             }
+            // TODO: parse out escaped chars? should the parser do this to
+            // validate escape sequences? should this be a recoverable error?
             ast::LiteralKind::String => hir::Literal::String(literal.symbol),
             ast::LiteralKind::ByteString => hir::Literal::ByteString(value.as_bytes().into()),
             ast::LiteralKind::CString => hir::Literal::CString(value.as_bytes().into()),
