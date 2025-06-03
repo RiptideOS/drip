@@ -2,10 +2,9 @@ use std::rc::Rc;
 
 use colored::Colorize;
 
-use super::TypeContext;
 use crate::{
     index::{Index, simple_index},
-    middle::primitive::{FloatKind, IntKind, PrimitiveKind, UIntKind},
+    middle::primitive::{FloatKind, IntKind, UIntKind},
 };
 
 #[doc(hidden)]
@@ -22,6 +21,12 @@ mod private {
 /// guaranteed to be unique
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Type(Rc<TypeKind>, private::PrivateZst);
+
+impl Type {
+    pub fn new_from_reference_only_for_interning(kind: Rc<TypeKind>) -> Self {
+        Self(kind, private::PrivateZst)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeKind {
@@ -100,37 +105,6 @@ simple_index! {
     pub struct FloatVariableId;
 }
 
-impl<'hir> TypeContext<'hir> {
-    pub fn intern_type(&mut self, kind: TypeKind) -> Type {
-        let rc = self.type_table.get_or_insert(Rc::new(kind));
-        Type(rc.clone(), private::PrivateZst)
-    }
-
-    pub fn get_error_type(&mut self) -> Type {
-        self.intern_type(TypeKind::Error)
-    }
-
-    pub fn get_unit_type(&mut self) -> Type {
-        self.get_primitive_type(PrimitiveKind::Unit)
-    }
-
-    pub fn get_primitive_type(&mut self, primitive: PrimitiveKind) -> Type {
-        match primitive {
-            PrimitiveKind::Never => self.intern_type(TypeKind::Never),
-            PrimitiveKind::Unit => self.intern_type(TypeKind::Unit),
-            PrimitiveKind::Int(int_kind) => self.intern_type(TypeKind::Integer(int_kind)),
-            PrimitiveKind::UInt(uint_kind) => {
-                self.intern_type(TypeKind::UnsignedInteger(uint_kind))
-            }
-            PrimitiveKind::Float(float_kind) => self.intern_type(TypeKind::Float(float_kind)),
-            PrimitiveKind::Bool => self.intern_type(TypeKind::Bool),
-            PrimitiveKind::Char => self.intern_type(TypeKind::Char),
-            PrimitiveKind::Str => self.intern_type(TypeKind::Str),
-            PrimitiveKind::CStr => self.intern_type(TypeKind::CStr),
-        }
-    }
-}
-
 impl core::fmt::Debug for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("Type").field(&self.0).finish()
@@ -183,6 +157,9 @@ impl TypeKind {
             self,
             TypeKind::Float(_) | TypeKind::Infer(TypeVariable::Float(_))
         )
+    }
+    pub fn is_never(&self) -> bool {
+        matches!(self, TypeKind::Never)
     }
 
     pub fn is_unit(&self) -> bool {

@@ -1,7 +1,5 @@
 use strum::{Display, EnumIter, EnumString};
 
-use crate::frontend::ast::{BinaryOperatorKind, UnaryOperatorKind};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 #[strum(serialize_all = "lowercase")]
 pub enum PrimitiveKind {
@@ -31,7 +29,7 @@ pub enum IntKind {
     ISize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq,  Hash, Display, EnumString, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter)]
 #[strum(serialize_all = "lowercase")]
 pub enum UIntKind {
     U8,
@@ -41,7 +39,7 @@ pub enum UIntKind {
     USize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq,  Hash, Display, EnumString, EnumIter)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumString, EnumIter)]
 #[strum(serialize_all = "lowercase")]
 pub enum FloatKind {
     F32,
@@ -69,139 +67,6 @@ impl PrimitiveKind {
         Self::Str,
         Self::CStr,
     ];
-
-    pub fn supports_binary_op(&self, kind: BinaryOperatorKind) -> bool {
-        match self {
-            // All ops besides logical
-            PrimitiveKind::UInt(_) | PrimitiveKind::Int(_) => match kind {
-                BinaryOperatorKind::Add
-                | BinaryOperatorKind::Subtract
-                | BinaryOperatorKind::Multiply
-                | BinaryOperatorKind::Divide
-                | BinaryOperatorKind::Modulus
-                | BinaryOperatorKind::Equals
-                | BinaryOperatorKind::NotEquals
-                | BinaryOperatorKind::LessThan
-                | BinaryOperatorKind::LessThanOrEqualTo
-                | BinaryOperatorKind::GreaterThan
-                | BinaryOperatorKind::GreaterThanOrEqualTo
-                | BinaryOperatorKind::BitwiseAnd
-                | BinaryOperatorKind::BitwiseOr
-                | BinaryOperatorKind::BitwiseXor
-                | BinaryOperatorKind::ShiftLeft
-                | BinaryOperatorKind::ShiftRight => true,
-                BinaryOperatorKind::LogicalAnd | BinaryOperatorKind::LogicalOr => false,
-            },
-            // No bitwise or logical ops
-            PrimitiveKind::Float(_) => match kind {
-                BinaryOperatorKind::Add
-                | BinaryOperatorKind::Subtract
-                | BinaryOperatorKind::Multiply
-                | BinaryOperatorKind::Divide
-                | BinaryOperatorKind::Modulus
-                | BinaryOperatorKind::Equals
-                | BinaryOperatorKind::NotEquals
-                | BinaryOperatorKind::LessThan
-                | BinaryOperatorKind::LessThanOrEqualTo
-                | BinaryOperatorKind::GreaterThan
-                | BinaryOperatorKind::GreaterThanOrEqualTo => true,
-                BinaryOperatorKind::LogicalAnd
-                | BinaryOperatorKind::LogicalOr
-                | BinaryOperatorKind::BitwiseAnd
-                | BinaryOperatorKind::BitwiseOr
-                | BinaryOperatorKind::BitwiseXor
-                | BinaryOperatorKind::ShiftLeft
-                | BinaryOperatorKind::ShiftRight => false,
-            },
-            // Only comparison ops
-            PrimitiveKind::Char => match kind {
-                BinaryOperatorKind::Equals
-                | BinaryOperatorKind::NotEquals
-                | BinaryOperatorKind::LessThan
-                | BinaryOperatorKind::LessThanOrEqualTo
-                | BinaryOperatorKind::GreaterThan
-                | BinaryOperatorKind::GreaterThanOrEqualTo => true,
-                BinaryOperatorKind::Add
-                | BinaryOperatorKind::Subtract
-                | BinaryOperatorKind::Multiply
-                | BinaryOperatorKind::Divide
-                | BinaryOperatorKind::Modulus
-                | BinaryOperatorKind::LogicalAnd
-                | BinaryOperatorKind::LogicalOr
-                | BinaryOperatorKind::BitwiseAnd
-                | BinaryOperatorKind::BitwiseOr
-                | BinaryOperatorKind::BitwiseXor
-                | BinaryOperatorKind::ShiftLeft
-                | BinaryOperatorKind::ShiftRight => false,
-            },
-            // Only simple comparison and logical ops
-            PrimitiveKind::Bool => match kind {
-                BinaryOperatorKind::Equals
-                | BinaryOperatorKind::NotEquals
-                | BinaryOperatorKind::LogicalAnd
-                | BinaryOperatorKind::LogicalOr => true,
-                BinaryOperatorKind::LessThan
-                | BinaryOperatorKind::LessThanOrEqualTo
-                | BinaryOperatorKind::GreaterThan
-                | BinaryOperatorKind::GreaterThanOrEqualTo
-                | BinaryOperatorKind::Add
-                | BinaryOperatorKind::Subtract
-                | BinaryOperatorKind::Multiply
-                | BinaryOperatorKind::Divide
-                | BinaryOperatorKind::Modulus
-                | BinaryOperatorKind::BitwiseAnd
-                | BinaryOperatorKind::BitwiseOr
-                | BinaryOperatorKind::BitwiseXor
-                | BinaryOperatorKind::ShiftLeft
-                | BinaryOperatorKind::ShiftRight => false,
-            },
-            // No ops supported
-            PrimitiveKind::Never
-            | PrimitiveKind::Unit
-            | PrimitiveKind::Str
-            | PrimitiveKind::CStr => false,
-        }
-    }
-
-    pub fn supports_unary_op(&self, kind: UnaryOperatorKind) -> bool {
-        match self {
-            PrimitiveKind::Never
-            | PrimitiveKind::Unit
-            | PrimitiveKind::Str
-            | PrimitiveKind::CStr => false,
-            PrimitiveKind::UInt(_) => match kind {
-                UnaryOperatorKind::BitwiseNot | UnaryOperatorKind::AddressOf => true,
-                UnaryOperatorKind::Deref
-                | UnaryOperatorKind::LogicalNot
-                | UnaryOperatorKind::Negate => false,
-            },
-            PrimitiveKind::Int(_) => match kind {
-                UnaryOperatorKind::BitwiseNot
-                | UnaryOperatorKind::Negate
-                | UnaryOperatorKind::AddressOf => true,
-                UnaryOperatorKind::Deref | UnaryOperatorKind::LogicalNot => false,
-            },
-            PrimitiveKind::Float(_) => match kind {
-                UnaryOperatorKind::BitwiseNot
-                | UnaryOperatorKind::Negate
-                | UnaryOperatorKind::AddressOf => true,
-                UnaryOperatorKind::Deref | UnaryOperatorKind::LogicalNot => false,
-            },
-            PrimitiveKind::Bool => match kind {
-                UnaryOperatorKind::LogicalNot | UnaryOperatorKind::AddressOf => true,
-                UnaryOperatorKind::Deref
-                | UnaryOperatorKind::BitwiseNot
-                | UnaryOperatorKind::Negate => false,
-            },
-            PrimitiveKind::Char => match kind {
-                UnaryOperatorKind::AddressOf => true,
-                UnaryOperatorKind::Deref
-                | UnaryOperatorKind::LogicalNot
-                | UnaryOperatorKind::BitwiseNot
-                | UnaryOperatorKind::Negate => false,
-            },
-        }
-    }
 
     pub fn can_be_cast_to(&self, target: Self) -> bool {
         match self {

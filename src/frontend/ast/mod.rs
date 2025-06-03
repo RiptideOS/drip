@@ -329,3 +329,27 @@ pub enum AssignmentOperatorKind {
     ShiftLeft,  // <<=
     ShiftRight, // >>=
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignmentOperatorClass {
+    Arithmetic,
+    Logical,
+}
+
+impl AssignmentOperatorKind {
+    pub fn class(self) -> AssignmentOperatorClass {
+        match self {
+            Self::Add
+            | Self::Subtract
+            | Self::Multiply
+            | Self::Divide
+            | Self::Modulus
+            | Self::BitwiseAnd
+            | Self::BitwiseOr
+            | Self::BitwiseXor
+            | Self::ShiftLeft
+            | Self::ShiftRight => AssignmentOperatorClass::Arithmetic,
+            Self::LogicalAnd | Self::LogicalOr => AssignmentOperatorClass::Logical,
+        }
+    }
+}

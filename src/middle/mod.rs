@@ -6,4 +6,5 @@ pub mod ast_lowering;
 pub mod hir;
 pub mod primitive;
 pub mod resolve;
-pub mod type_checking;
+pub mod ty;
+pub mod type_check;

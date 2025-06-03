@@ -25,19 +25,20 @@ use std::{collections::BTreeMap, rc::Rc};
 
 use colored::Colorize;
 use hashbrown::{HashMap, HashSet};
-use ty::{FloatVariableId, IntVariableId, Type, TypeKind};
 
 use super::{
     hir::{self, Module, OwnerNode},
     primitive::{PrimitiveKind, UIntKind},
 };
 use crate::{
-    frontend::{SourceFile, ast::BinaryOperatorClass, lexer::Span},
+    frontend::{
+        SourceFile,
+        ast::{AssignmentOperatorClass, BinaryOperatorClass, UnaryOperatorKind},
+        lexer::Span,
+    },
     index::Index,
-    middle::type_checking::ty::TypeVariable,
+    middle::ty::{FloatVariableId, IntVariableId, Type, TypeKind, TypeVariable},
 };
-
-pub mod ty;
 
 #[derive(Debug)]
 struct TypeContext<'hir> {
@@ -61,11 +62,40 @@ impl<'hir> TypeContext<'hir> {
         }
     }
 
+    pub fn intern_type(&mut self, kind: TypeKind) -> Type {
+        let rc = self.type_table.get_or_insert(Rc::new(kind));
+        Type::new_from_reference_only_for_interning(rc.clone())
+    }
+
+    pub fn get_error_type(&mut self) -> Type {
+        self.intern_type(TypeKind::Error)
+    }
+
+    pub fn get_unit_type(&mut self) -> Type {
+        self.get_primitive_type(PrimitiveKind::Unit)
+    }
+
+    pub fn get_primitive_type(&mut self, primitive: PrimitiveKind) -> Type {
+        match primitive {
+            PrimitiveKind::Never => self.intern_type(TypeKind::Never),
+            PrimitiveKind::Unit => self.intern_type(TypeKind::Unit),
+            PrimitiveKind::Int(int_kind) => self.intern_type(TypeKind::Integer(int_kind)),
+            PrimitiveKind::UInt(uint_kind) => {
+                self.intern_type(TypeKind::UnsignedInteger(uint_kind))
+            }
+            PrimitiveKind::Float(float_kind) => self.intern_type(TypeKind::Float(float_kind)),
+            PrimitiveKind::Bool => self.intern_type(TypeKind::Bool),
+            PrimitiveKind::Char => self.intern_type(TypeKind::Char),
+            PrimitiveKind::Str => self.intern_type(TypeKind::Str),
+            PrimitiveKind::CStr => self.intern_type(TypeKind::CStr),
+        }
+    }
+
     fn compute_hir_type(&mut self, ty: Rc<hir::Type>) -> Type {
         match &ty.kind {
             hir::TypeKind::Path(path) => match path.resolution() {
                 hir::Resolution::Definition(_definition_kind, local_def_id) => {
-                    let owner = &self.module.owners[*local_def_id];
+                    let _owner = &self.module.owners[*local_def_id];
                     todo!("compute user defined types")
                 }
                 hir::Resolution::Primitive(primitive_kind) => {
@@ -121,7 +151,6 @@ impl<'hir> TypeContext<'hir> {
                         "let binding initializer type {actual} does not match explicit type {expected}"
                     )
                 }
-                TypeBoundary::FunctionCall => todo!(),
                 TypeBoundary::FunctionArgument => {
                     format!("expected function argument to be {expected} but found {actual}")
                 }
@@ -143,9 +172,18 @@ impl<'hir> TypeContext<'hir> {
                 TypeBoundary::BinaryOp => format!(
                     "expected left-hand side of binary op {expected} to match right-hand side {actual}"
                 ),
-                TypeBoundary::Assignment => todo!(),
+                TypeBoundary::Assignment => {
+                    format!("cannot assign {actual} to variable with type {expected}")
+                }
                 TypeBoundary::OpAssignment => todo!(),
+                TypeBoundary::FunctionCall
+                | TypeBoundary::Deref
+                | TypeBoundary::LogicalOp
+                | TypeBoundary::ArithmeticOp => {
+                    unreachable!("these are not used with type mismatch")
+                }
             },
+            // TODO: use error.origin.kind for even better error reporting in some cases
             TypeErrorKind::InvalidOperation {
                 attempted_usage,
                 provided,
@@ -159,8 +197,15 @@ impl<'hir> TypeContext<'hir> {
                 TypeUsage::FunctionCall => {
                     format!("cannot use type {provided} as the target of a function call")
                 }
+                TypeUsage::Deref => {
+                    format!("type {provided} cannot be dereferenced")
+                }
             },
-            TypeErrorKind::InfinitelyRecursiveType { variable, ty } => todo!(),
+            TypeErrorKind::InfinitelyRecursiveType { variable, ty } => {
+                // I'm fairly certain that this is impossible, so if we catch it
+                // in the wild then I will be impressed
+                format!("type {ty} is infinitely recursive (variable = {variable:?})")
+            }
             TypeErrorKind::ArgumentLengthMismatch { expected, actual } => {
                 format!("expected {expected} argument(s) to this function but found {actual}",)
             }
@@ -278,6 +323,12 @@ enum TypeBoundary {
     /// Bare expressions in a block which are not the last in the block must
     /// have be unit type
     BareExpression,
+    /// Dereferencing can only be done on pointer types
+    Deref,
+    /// Cannot use non-boolean types in a logical context
+    LogicalOp,
+    /// Cannot use non-arithmetic types in arithmetic contexts
+    ArithmeticOp,
     /// Sides of binary op must have the same type
     BinaryOp,
     /// Sides of assignment must have the same type
@@ -631,6 +682,7 @@ enum TypeUsage {
     ArithmeticOperation,
     LogicalOperation,
     FunctionCall,
+    Deref,
 }
 
 impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
@@ -855,8 +907,8 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                         // For arithmetic operations the result is always the same as the inputs
                         self.insert_type(expression.hir_id, lhs_ty.clone());
                     }
-                    // If this is an arithmetic operator, require that both
-                    // types are bools
+                    // If this is a logical operator, require that both types
+                    // are bools
                     class @ (BinaryOperatorClass::Logical | BinaryOperatorClass::Equality) => {
                         let bool_ty = self.type_context.get_primitive_type(PrimitiveKind::Bool);
 
@@ -904,7 +956,8 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                             }
                         }
 
-                        // For arithmetic operations, the result is always a boolean no matter what
+                        // For logical operations, the result is always a
+                        // boolean no matter what
                         self.insert_type(expression.hir_id, bool_ty);
                     }
                 }
@@ -922,7 +975,81 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                     },
                 );
             }
-            hir::ExpressionKind::Unary { operator, operand } => todo!(),
+            hir::ExpressionKind::Unary { operator, operand } => {
+                let operand_ty = self.get_type(operand.hir_id);
+
+                match operator {
+                    UnaryOperatorKind::Deref => {
+                        let TypeKind::Pointer(inner_ty) = &*operand_ty else {
+                            let err = self.type_context.get_error_type();
+                            self.insert_type(expression.hir_id, err);
+
+                            self.errors.push(TypeError {
+                                origin: TypeConstraintOrigin {
+                                    span: expression.span,
+                                    kind: TypeBoundary::Deref,
+                                },
+                                kind: TypeErrorKind::InvalidOperation {
+                                    attempted_usage: TypeUsage::Deref,
+                                    provided: operand_ty.clone(),
+                                },
+                            });
+                            return;
+                        };
+
+                        self.insert_type(expression.hir_id, inner_ty.clone());
+                    }
+                    UnaryOperatorKind::AddressOf => {
+                        // TODO: can all types have their address taken? this is
+                        // unclear. what about error types? what about zero
+                        // sized types? (rust returns 0x1 for ZSTs)
+
+                        let pointer_ty =
+                            self.type_context.intern_type(TypeKind::Pointer(operand_ty));
+                        self.insert_type(expression.hir_id, pointer_ty);
+                    }
+                    UnaryOperatorKind::LogicalNot => {
+                        if !operand_ty.is_bool() {
+                            let err = self.type_context.get_error_type();
+                            self.insert_type(expression.hir_id, err);
+
+                            self.errors.push(TypeError {
+                                origin: TypeConstraintOrigin {
+                                    span: expression.span,
+                                    kind: TypeBoundary::LogicalOp,
+                                },
+                                kind: TypeErrorKind::InvalidOperation {
+                                    attempted_usage: TypeUsage::LogicalOperation,
+                                    provided: operand_ty.clone(),
+                                },
+                            });
+                            return;
+                        }
+
+                        self.insert_type(expression.hir_id, operand_ty);
+                    }
+                    UnaryOperatorKind::BitwiseNot | UnaryOperatorKind::Negate => {
+                        if !operand_ty.is_arithmetic() {
+                            let err = self.type_context.get_error_type();
+                            self.insert_type(expression.hir_id, err);
+
+                            self.errors.push(TypeError {
+                                origin: TypeConstraintOrigin {
+                                    span: expression.span,
+                                    kind: TypeBoundary::ArithmeticOp,
+                                },
+                                kind: TypeErrorKind::InvalidOperation {
+                                    attempted_usage: TypeUsage::ArithmeticOperation,
+                                    provided: operand_ty.clone(),
+                                },
+                            });
+                            return;
+                        }
+
+                        self.insert_type(expression.hir_id, operand_ty);
+                    }
+                }
+            }
             hir::ExpressionKind::Cast {
                 expression: castee,
                 ty,
@@ -983,11 +1110,170 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
 
                 self.insert_type(expression.hir_id, positive_ty);
             }
-            hir::ExpressionKind::While { condition, block } => todo!(),
-            hir::ExpressionKind::Assignment { lhs, rhs } => todo!(),
-            hir::ExpressionKind::OperatorAssignment { operator, lhs, rhs } => todo!(),
-            hir::ExpressionKind::Break => todo!(),
-            hir::ExpressionKind::Continue => todo!(),
+            hir::ExpressionKind::While { condition, block } => {
+                let condition_ty = self.get_type(condition.hir_id);
+                let block_ty = self.get_type(block.hir_id);
+                let unit_ty = self.type_context.get_unit_type();
+
+                if !condition_ty.is_bool() && !condition_ty.is_error() {
+                    let bool_ty = self.type_context.get_primitive_type(PrimitiveKind::Bool);
+
+                    self.errors.push(TypeError {
+                        origin: TypeConstraintOrigin {
+                            span: condition.span,
+                            kind: TypeBoundary::WhileCondition,
+                        },
+                        kind: TypeErrorKind::TypeMismatch {
+                            expected: bool_ty,
+                            actual: condition_ty,
+                        },
+                    });
+                }
+
+                if !block_ty.is_unit() {
+                    self.errors.push(TypeError {
+                        origin: TypeConstraintOrigin {
+                            span: condition.span,
+                            kind: TypeBoundary::WhileCondition,
+                        },
+                        kind: TypeErrorKind::TypeMismatch {
+                            expected: unit_ty.clone(),
+                            actual: block_ty,
+                        },
+                    });
+                }
+
+                self.insert_type(expression.hir_id, unit_ty);
+            }
+            hir::ExpressionKind::Assignment { lhs, rhs } => {
+                let lhs_ty = self.get_type(lhs.hir_id);
+                let rhs_ty = self.get_type(rhs.hir_id);
+                let unit_ty = self.type_context.get_unit_type();
+
+                self.create_type_constraint(
+                    lhs_ty,
+                    rhs_ty,
+                    TypeConstraintOrigin {
+                        // TODO: use the span of the last expr in the block chain (lol)
+                        span: expression.span,
+                        kind: TypeBoundary::Assignment,
+                    },
+                );
+
+                self.insert_type(expression.hir_id, unit_ty);
+            }
+            hir::ExpressionKind::OperatorAssignment { operator, lhs, rhs } => {
+                let lhs_ty = self.get_type(lhs.hir_id);
+                let rhs_ty = self.get_type(rhs.hir_id);
+                let unit_ty = self.type_context.get_unit_type();
+
+                match operator.class() {
+                    // If this is an arithmetic operator, require that both
+                    // types are arithmetic
+                    AssignmentOperatorClass::Arithmetic => {
+                        let mut error = false;
+
+                        if !lhs_ty.is_arithmetic() {
+                            error = true;
+
+                            self.errors.push(TypeError {
+                                origin: TypeConstraintOrigin {
+                                    span: lhs.span,
+                                    kind: TypeBoundary::OpAssignment,
+                                },
+                                kind: TypeErrorKind::InvalidOperation {
+                                    attempted_usage: TypeUsage::ArithmeticOperation,
+                                    provided: lhs_ty.clone(),
+                                },
+                            });
+                        }
+
+                        if !rhs_ty.is_arithmetic() {
+                            error = true;
+
+                            self.errors.push(TypeError {
+                                origin: TypeConstraintOrigin {
+                                    span: rhs.span,
+                                    kind: TypeBoundary::OpAssignment,
+                                },
+                                kind: TypeErrorKind::InvalidOperation {
+                                    attempted_usage: TypeUsage::ArithmeticOperation,
+                                    provided: rhs_ty.clone(),
+                                },
+                            });
+                        }
+
+                        if error {
+                            let error_ty = self.type_context.get_error_type();
+                            self.insert_type(expression.hir_id, error_ty);
+
+                            return;
+                        }
+                    }
+                    // If this is a logical operator, require that both
+                    // types are bools
+                    AssignmentOperatorClass::Logical => {
+                        let mut error = false;
+
+                        if !lhs_ty.is_bool() {
+                            error = true;
+
+                            self.errors.push(TypeError {
+                                origin: TypeConstraintOrigin {
+                                    span: lhs.span,
+                                    kind: TypeBoundary::OpAssignment,
+                                },
+                                kind: TypeErrorKind::InvalidOperation {
+                                    attempted_usage: TypeUsage::LogicalOperation,
+                                    provided: lhs_ty.clone(),
+                                },
+                            });
+                        }
+
+                        if !rhs_ty.is_bool() {
+                            error = true;
+
+                            self.errors.push(TypeError {
+                                origin: TypeConstraintOrigin {
+                                    span: rhs.span,
+                                    kind: TypeBoundary::OpAssignment,
+                                },
+                                kind: TypeErrorKind::InvalidOperation {
+                                    attempted_usage: TypeUsage::LogicalOperation,
+                                    provided: rhs_ty.clone(),
+                                },
+                            });
+                        }
+
+                        if error {
+                            let error_ty = self.type_context.get_error_type();
+                            self.insert_type(expression.hir_id, error_ty);
+
+                            return;
+                        }
+                    }
+                }
+
+                // For operators like &&= and ||=, the types need to be
+                // bools. For operators like += and -=, the types need
+                // to be the same. In either case we need to add this
+                // equality constraint.
+                self.create_type_constraint(
+                    lhs_ty.clone(),
+                    rhs_ty,
+                    TypeConstraintOrigin {
+                        span: expression.span,
+                        kind: TypeBoundary::OpAssignment,
+                    },
+                );
+                self.insert_type(expression.hir_id, unit_ty);
+            }
+            hir::ExpressionKind::Break | hir::ExpressionKind::Continue => {
+                // TODO: check that we are in a loop context
+
+                let ty = self.type_context.get_primitive_type(PrimitiveKind::Never);
+                self.insert_type(expression.hir_id, ty);
+            }
             hir::ExpressionKind::Return(_) => {
                 // TODO: check that return type matches current body return type
 
@@ -1008,7 +1294,7 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
             let expr_ty = self.get_type(e.hir_id);
             let unit_ty = self.type_context.get_unit_type();
 
-            if !expr_ty.is_unit() && !expr_ty.is_error() {
+            if !expr_ty.is_unit() && !expr_ty.is_never() && !expr_ty.is_error() {
                 self.errors.push(TypeError {
                     origin: TypeConstraintOrigin {
                         // TODO: use the span of the last expr in the block
@@ -1029,6 +1315,13 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
             let unit_ty = self.type_context.get_unit_type();
             self.insert_type(block.hir_id, unit_ty);
         }
+    }
+
+    fn visit_statement(&mut self, statement: Rc<hir::Statement>) {
+        hir::visit::walk_statement(self, statement.clone());
+
+        let unit_ty = self.type_context.get_unit_type();
+        self.insert_type(statement.hir_id, unit_ty);
     }
 }
 
