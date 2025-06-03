@@ -229,6 +229,36 @@ pub enum BinaryOperatorKind {
     ShiftRight,           // >>
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOperatorClass {
+    Arithmetic,
+    Logical,
+    Equality,
+}
+
+impl BinaryOperatorKind {
+    pub fn class(self) -> BinaryOperatorClass {
+        match self {
+            Self::Add
+            | Self::Subtract
+            | Self::Multiply
+            | Self::Divide
+            | Self::Modulus
+            | Self::LessThan
+            | Self::LessThanOrEqualTo
+            | Self::GreaterThan
+            | Self::GreaterThanOrEqualTo
+            | Self::BitwiseAnd
+            | Self::BitwiseOr
+            | Self::BitwiseXor
+            | Self::ShiftLeft
+            | Self::ShiftRight => BinaryOperatorClass::Arithmetic,
+            Self::LogicalAnd | Self::LogicalOr => BinaryOperatorClass::Logical,
+            Self::Equals | Self::NotEquals => BinaryOperatorClass::Equality,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct UnaryOperator {
     pub id: NodeId,

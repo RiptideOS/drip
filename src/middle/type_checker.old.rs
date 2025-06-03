@@ -21,6 +21,14 @@ use std::{
 use colored::Colorize;
 use strum::IntoEnumIterator;
 
+use super::{
+    hir::{
+        AssignmentKind, Block, FunctionDefinition, HirExpression, HirExpressionKind,
+        HirFunctionParameter, HirLocalKind, Literal, Local, Module, Statement,
+    },
+    primitive::PrimitiveKind,
+    resolve::{DefinitionId, ModuleResolutionMap, ValueDefinitionKind},
+};
 use crate::{
     frontend::{
         ast::{
@@ -32,15 +40,6 @@ use crate::{
         lexer::Span,
     },
     middle::resolve::{TypeNameResolution, ValueNameResolution},
-};
-
-use super::{
-    hir::{
-        AssignmentKind, Block, FunctionDefinition, HirExpression, HirExpressionKind,
-        HirFunctionParameter, HirLocalKind, Literal, Local, Module, Statement,
-    },
-    primitive::PrimitiveKind,
-    resolve::{DefinitionId, ModuleResolutionMap, ValueDefinitionKind},
 };
 
 #[derive(Debug)]

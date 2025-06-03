@@ -1,8 +1,10 @@
 use std::rc::Rc;
 
+use colored::Colorize;
+
 use super::TypeContext;
 use crate::{
-    index::simple_index,
+    index::{Index, simple_index},
     middle::primitive::{FloatKind, IntKind, PrimitiveKind, UIntKind},
 };
 
@@ -76,6 +78,10 @@ pub enum TypeKind {
     Any,
     /// An unresolved type variable whose type must be inferred
     Infer(TypeVariable),
+    /// The type which is created as a result of some illegal operation which we
+    /// can't compute the type of. If you find this in your type, there is no
+    /// use emitting another error since one has already been created.
+    Error,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -98,6 +104,10 @@ impl<'hir> TypeContext<'hir> {
     pub fn intern_type(&mut self, kind: TypeKind) -> Type {
         let rc = self.type_table.get_or_insert(Rc::new(kind));
         Type(rc.clone(), private::PrivateZst)
+    }
+
+    pub fn get_error_type(&mut self) -> Type {
+        self.intern_type(TypeKind::Error)
     }
 
     pub fn get_unit_type(&mut self) -> Type {
@@ -136,23 +146,55 @@ impl core::ops::Deref for Type {
 }
 
 impl TypeKind {
-    /// Returns true if this type is able to be coerced into the other target
-    /// type during type inference.
-    pub fn can_infer_into(&self, other: &Self) -> bool {
+    pub fn is_arithmetic(&self) -> bool {
+        // TODO: pointer arithmetic?
+
         match self {
-            TypeKind::Infer(TypeVariable::Int(_)) => match other {
-                TypeKind::Integer(_)
-                | TypeKind::UnsignedInteger(_)
-                | TypeKind::Infer(TypeVariable::Int(_)) => true,
-                _ => false,
-            },
-            TypeKind::Infer(TypeVariable::Float(_)) => match other {
-                TypeKind::Float(_) | TypeKind::Infer(TypeVariable::Float(_)) => true,
-                _ => false,
-            },
-            // Only free type variables can be coerced during inference
-            _ => false,
+            TypeKind::Integer(_)
+            | TypeKind::UnsignedInteger(_)
+            | TypeKind::Float(_)
+            | TypeKind::Infer(_) => true,
+            TypeKind::Never
+            | TypeKind::Unit
+            | TypeKind::Bool
+            | TypeKind::Char
+            | TypeKind::Pointer(_)
+            | TypeKind::Slice(_)
+            | TypeKind::Str
+            | TypeKind::CStr
+            | TypeKind::Array { .. }
+            | TypeKind::FunctionPointer { .. }
+            | TypeKind::Any
+            | TypeKind::Error => false,
         }
+    }
+
+    pub fn is_integer_like(&self) -> bool {
+        matches!(
+            self,
+            TypeKind::Integer(_)
+                | TypeKind::UnsignedInteger(_)
+                | TypeKind::Infer(TypeVariable::Int(_))
+        )
+    }
+
+    pub fn is_float_like(&self) -> bool {
+        matches!(
+            self,
+            TypeKind::Float(_) | TypeKind::Infer(TypeVariable::Float(_))
+        )
+    }
+
+    pub fn is_unit(&self) -> bool {
+        matches!(self, TypeKind::Unit)
+    }
+
+    pub fn is_bool(&self) -> bool {
+        matches!(self, TypeKind::Bool)
+    }
+
+    pub fn is_error(&self) -> bool {
+        matches!(self, TypeKind::Error)
     }
 }
 
@@ -174,9 +216,28 @@ impl core::fmt::Display for TypeKind {
             Self::FunctionPointer { .. } => todo!("Format function pointers"),
             Self::Any => write!(f, "*any"),
             Self::Infer(type_variable) => match type_variable {
-                TypeVariable::Int(_) => write!(f, "{{integer}}"),
-                TypeVariable::Float(_) => write!(f, "{{float}}"),
+                TypeVariable::Int(id) => write!(f, "{{integer@{}}}", id.index()),
+                TypeVariable::Float(id) => write!(f, "{{float@{}}}", id.index()),
             },
+            Self::Error => write!(f, "{{unknown}}"),
         }
+    }
+}
+
+impl core::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.colored().yellow())
+    }
+}
+
+impl From<Type> for colored::ColoredString {
+    fn from(s: Type) -> Self {
+        (*s).to_string().into()
+    }
+}
+
+impl Type {
+    pub fn colored(&self) -> colored::ColoredString {
+        self.clone().into()
     }
 }

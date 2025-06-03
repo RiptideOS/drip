@@ -515,7 +515,6 @@ impl<'a, 'ast> ItemLowerer<'a, 'ast> {
 
 pub fn lower_to_hir<'ast>(module: &'ast ast::Module<'ast>) -> hir::Module {
     let mut resolver = Resolver::new();
-    println!("{resolver:#?}");
     resolver.resolve_module(module);
     let resolver = resolver.into_outputs();
 

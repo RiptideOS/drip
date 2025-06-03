@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+use colored::Colorize;
+
 use super::{hir, primitive::PrimitiveKind};
 use crate::{
     frontend::{
@@ -158,7 +160,8 @@ impl<'res, 'ast> DefinitionCollector<'res, 'ast> {
 
     fn report_duplicate_definition(&self, offending_span: Span) -> ! {
         eprintln!(
-            "Conflicting definition for identifier `{}` ({})",
+            "{}: duplicate definition for global identifier `{}` ({})",
+            "error".red(),
             self.module.source_file.value_of_span(offending_span),
             self.module.source_file.format_span_position(offending_span)
         );
@@ -243,7 +246,8 @@ impl<'res, 'ast> LateResolveVisitor<'res, 'ast> {
 
     fn report_duplicate_binding(&self, offending_span: Span) -> ! {
         eprintln!(
-            "Conflicting definition for identifier `{}` ({})",
+            "{}: duplicate definition for identifier `{}` ({})",
+            "error".red(),
             self.module.source_file.value_of_span(offending_span),
             self.module.source_file.format_span_position(offending_span)
         );

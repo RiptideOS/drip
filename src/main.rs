@@ -72,13 +72,13 @@ fn main() {
     for source_file in &source_files {
         // Construct AST from the source code
         let ast = Parser::parse_module(source_file);
-        println!("{ast:#?}");
+        // println!("{ast:#?}");
 
         // Index AST and resolve names to produce HIR
         let hir = lower_to_hir(&ast);
-        println!("{hir:#?}");
+        // println!("{hir:#?}");
 
-        let types = type_check_module(&hir);
+        let types = type_check_module(&hir, &source_file);
         println!("{types:#?}");
     }
 }

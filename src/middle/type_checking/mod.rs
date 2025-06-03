@@ -21,8 +21,9 @@
 //! report any errors since the input source code has been fully validated. From
 //! there, the next step is to use the computed types to lower the HIR to LIR.
 
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{collections::BTreeMap, rc::Rc};
 
+use colored::Colorize;
 use hashbrown::{HashMap, HashSet};
 use ty::{FloatVariableId, IntVariableId, Type, TypeKind};
 
@@ -31,12 +32,9 @@ use super::{
     primitive::{PrimitiveKind, UIntKind},
 };
 use crate::{
-    frontend::lexer::Span,
+    frontend::{SourceFile, ast::BinaryOperatorClass, lexer::Span},
     index::Index,
-    middle::{
-        hir::{HirId, LocalDefId},
-        type_checking::ty::TypeVariable,
-    },
+    middle::type_checking::ty::TypeVariable,
 };
 
 pub mod ty;
@@ -45,17 +43,19 @@ pub mod ty;
 struct TypeContext<'hir> {
     /// Module we are type checking
     module: &'hir hir::Module,
+    /// Used for error reporting
+    source_file: &'hir SourceFile,
     /// Type interning table to prevent duplicate types
     type_table: HashSet<Rc<TypeKind>>,
-
     /// Stores the computed types of top level items in the module
     def_id_to_type_map: BTreeMap<hir::LocalDefId, Type>,
 }
 
 impl<'hir> TypeContext<'hir> {
-    fn new(module: &'hir Module) -> Self {
+    fn new(module: &'hir Module, source_file: &'hir SourceFile) -> Self {
         Self {
             module,
+            source_file,
             type_table: HashSet::new(),
             def_id_to_type_map: BTreeMap::new(),
         }
@@ -112,6 +112,72 @@ impl<'hir> TypeContext<'hir> {
             hir::TypeKind::Any => self.intern_type(TypeKind::Any),
         }
     }
+
+    fn report_error(&self, error: TypeError) {
+        let message = match error.kind {
+            TypeErrorKind::TypeMismatch { expected, actual } => match error.origin.kind {
+                TypeBoundary::LetStatement => {
+                    format!(
+                        "let binding initializer type {actual} does not match explicit type {expected}"
+                    )
+                }
+                TypeBoundary::FunctionCall => todo!(),
+                TypeBoundary::FunctionArgument => {
+                    format!("expected function argument to be {expected} but found {actual}")
+                }
+                TypeBoundary::Cast => {
+                    format!("{actual} cannot be trivially cast to {expected}")
+                }
+                TypeBoundary::IfCondition => {
+                    format!("expected if condition type to be {expected} but found {actual}")
+                }
+                TypeBoundary::IfBlock => {
+                    format!(
+                        "expected positive type of if condition {expected} to match negative type {actual}"
+                    )
+                }
+                TypeBoundary::WhileCondition => todo!(),
+                TypeBoundary::BareExpression => {
+                    format!("expected bare expression type to be {expected} but found {actual}")
+                }
+                TypeBoundary::BinaryOp => format!(
+                    "expected left-hand side of binary op {expected} to match right-hand side {actual}"
+                ),
+                TypeBoundary::Assignment => todo!(),
+                TypeBoundary::OpAssignment => todo!(),
+            },
+            TypeErrorKind::InvalidOperation {
+                attempted_usage,
+                provided,
+            } => match attempted_usage {
+                TypeUsage::ArithmeticOperation => {
+                    format!("cannot use type {provided} in an arithmetic context")
+                }
+                TypeUsage::LogicalOperation => {
+                    format!("cannot use type {provided} in a logical context")
+                }
+                TypeUsage::FunctionCall => {
+                    format!("cannot use type {provided} as the target of a function call")
+                }
+            },
+            TypeErrorKind::InfinitelyRecursiveType { variable, ty } => todo!(),
+            TypeErrorKind::ArgumentLengthMismatch { expected, actual } => {
+                format!("expected {expected} argument(s) to this function but found {actual}",)
+            }
+        };
+
+        eprintln!(
+            "{}: {} {}",
+            "error".red(),
+            message,
+            format!(
+                "(at {})",
+                self.source_file.format_span_position(error.origin.span),
+            )
+            .white()
+        );
+        self.source_file.highlight_span(error.origin.span);
+    }
 }
 
 /// Traverses the top level items in a module and computes their types, adding
@@ -157,17 +223,19 @@ impl<'tcx, 'hir> hir::visit::Visitor for GlobalTypeEnvironmentIndexer<'tcx, 'hir
 }
 
 /// The context associated with type checking an individual executable body
-struct BodyTypeChecker<'tcx, 'hir> {
+struct TypeChecker<'tcx, 'hir> {
     type_context: &'tcx mut TypeContext<'hir>,
     owner_id: hir::LocalDefId,
 
     /// Stores what types we've assigned to HIR nodes so far. This is
     /// effectively the type environment Γ from type theory just without using
-    /// the names directlt (resolved during ast lowering)
+    /// the names directly (resolved during ast lowering)
     node_to_type_map: BTreeMap<hir::ItemLocalId, Type>,
 
     /// A list of accumulated constraints on the existing free type variables
     constraints: Vec<TypeConstraint>,
+    /// Errors we've collected while type checking
+    errors: Vec<TypeError>,
 
     next_integer_variable_id: IntVariableId,
     next_float_variable_id: FloatVariableId,
@@ -195,6 +263,8 @@ enum TypeBoundary {
     /// If an explicit type is specified for a let binding, the expression must
     /// have that type
     LetStatement,
+    /// Function arguments must match the expected number
+    FunctionCall,
     /// Function argument type must match function paramter type
     FunctionArgument,
     /// Cast operand must match target type
@@ -216,7 +286,7 @@ enum TypeBoundary {
     OpAssignment,
 }
 
-impl<'tcx, 'hir> BodyTypeChecker<'tcx, 'hir> {
+impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
     fn insert_type(&mut self, hir_id: hir::HirId, ty: Type) -> Type {
         assert_eq!(hir_id.owner, self.owner_id);
 
@@ -224,6 +294,7 @@ impl<'tcx, 'hir> BodyTypeChecker<'tcx, 'hir> {
         ty
     }
 
+    #[track_caller]
     fn copy_type_from(&mut self, dest_id: hir::HirId, src_id: impl Into<hir::ItemLocalId>) -> Type {
         assert_eq!(dest_id.owner, self.owner_id);
 
@@ -233,6 +304,7 @@ impl<'tcx, 'hir> BodyTypeChecker<'tcx, 'hir> {
         shared
     }
 
+    #[track_caller]
     fn get_type(&mut self, id: impl Into<hir::ItemLocalId>) -> Type {
         self.node_to_type_map[&id.into()].clone()
     }
@@ -315,6 +387,8 @@ impl<'tcx, 'hir> BodyTypeChecker<'tcx, 'hir> {
         }
     }
 
+    /// Attempts to equate the provided types using our type system's inference
+    /// and coersion rules.
     fn unify(
         &mut self,
         t1: Type,
@@ -325,46 +399,49 @@ impl<'tcx, 'hir> BodyTypeChecker<'tcx, 'hir> {
         let t2 = self.apply_substitution(substitution_map, t2);
 
         match (&*t1, &*t2) {
-            // Both same type variable
-            (TypeKind::Infer(id1), TypeKind::Infer(id2)) if id1 == id2 => Ok(()),
-
-            // One is an integral inference type and one is an integer type
-            (TypeKind::Infer(TypeVariable::Int(id)), ty @ TypeKind::Integer(_))
-            | (ty @ TypeKind::Integer(_), TypeKind::Infer(TypeVariable::Int(id))) => {
-                // It is guaranteed that this type is already interned, but I
-                // cant figure out a nicer way to write this
-                let ty = self.type_context.intern_type(ty.clone());
-                let variable = TypeVariable::Int(*id);
-
-                if self.occurs_in(variable, ty.clone(), substitution_map) {
-                    return Err(TypeErrorKind::InfinitelyRecursiveType { variable, ty });
-                }
-
-                substitution_map.int_map.insert(*id, ty);
-                Ok(())
-            }
-
-            // One is a float inference type and one is an float type
-            (TypeKind::Infer(TypeVariable::Float(id)), ty @ TypeKind::Float(_))
-            | (ty @ TypeKind::Float(_), TypeKind::Infer(TypeVariable::Float(id))) => {
-                // It is guaranteed that this type is already interned, but I
-                // cant figure out a nicer way to write this
-                let ty = self.type_context.intern_type(ty.clone());
-                let variable = TypeVariable::Float(*id);
-
-                if self.occurs_in(variable, ty.clone(), substitution_map) {
-                    return Err(TypeErrorKind::InfinitelyRecursiveType { variable, ty });
-                }
-
-                substitution_map.float_map.insert(*id, ty);
-                Ok(())
-            }
-
-            // Both same concrete type
+            // Both already the same type (trivial)
             (t1, t2) if t1 == t2 => Ok(()),
 
+            // One is an integral inference type and one is an integer type
+            (TypeKind::Infer(variable), ty_kind) | (ty_kind, TypeKind::Infer(variable)) => {
+                // It is guaranteed that this type is already interned, but I
+                // cant figure out a nicer way to write this
+                let ty = self.type_context.intern_type(ty_kind.clone());
+
+                // This is where we define our inference coersion rules
+                let coercable = match variable {
+                    TypeVariable::Int(_) => ty_kind.is_integer_like(),
+                    TypeVariable::Float(_) => ty_kind.is_float_like(),
+                };
+
+                if !coercable {
+                    return Err(TypeErrorKind::TypeMismatch {
+                        expected: t1,
+                        actual: t2,
+                    });
+                }
+
+                if self.occurs_in(*variable, ty.clone(), substitution_map) {
+                    return Err(TypeErrorKind::InfinitelyRecursiveType {
+                        variable: *variable,
+                        ty,
+                    });
+                }
+
+                match variable {
+                    TypeVariable::Int(id) => {
+                        substitution_map.int_map.insert(*id, ty);
+                    }
+                    TypeVariable::Float(id) => {
+                        substitution_map.float_map.insert(*id, ty);
+                    }
+                }
+
+                Ok(())
+            }
+
             // Any other type combination
-            _ => Err(TypeErrorKind::Mismatch {
+            _ => Err(TypeErrorKind::TypeMismatch {
                 expected: t1,
                 actual: t2,
             }),
@@ -457,7 +534,18 @@ impl<'tcx, 'hir> BodyTypeChecker<'tcx, 'hir> {
     /// was able to do so successfully
     pub fn into_output(mut self) -> Result<TypeCheckResults, Vec<TypeError>> {
         // Solve the collected constraints
-        let substitution_map = self.unify_constraints()?;
+        let substitution_map = match self.unify_constraints() {
+            Ok(s) => s,
+            Err(mut errors) => {
+                self.errors.append(&mut errors);
+                return Err(self.errors);
+            }
+        };
+
+        // If we unified successfully but had other problems, stop here
+        if !self.errors.is_empty() {
+            return Err(self.errors);
+        }
 
         // FIXME: we could optimize this by first only applying substitutions to
         // the set of unique types, create a map of the resulting substitutions,
@@ -509,16 +597,43 @@ struct TypeError {
 enum TypeErrorKind {
     /// The expected type did not match the actual type we found in that
     /// position (semantics depend a lot on the constraint origin which caused
-    /// this error)
-    Mismatch { expected: Type, actual: Type },
+    /// this error). This only applies when we know exactly what the target type
+    /// should be, not for generic requirements like "binary ops should have
+    /// arithmetic types". For that, we use
+    /// [`InvalidOperation`](`Self::InvalidOperation`)
+    TypeMismatch {
+        expected: Type,
+        actual: Type,
+    },
+    /// The provided type does not support the operation it is used in. For
+    /// example, using a str in an arithmetic expression, or using an int as the
+    /// target of a function call expression.
+    InvalidOperation {
+        attempted_usage: TypeUsage,
+        provided: Type,
+    },
     /// A type variable whose type contains itself. Not sure if this is actually
     /// possible to happen in our type system, but maybe it could happen in the
     /// future depending on the features we add so its good to implement it
     /// early on
-    InfinitelyRecursiveType { variable: TypeVariable, ty: Type },
+    InfinitelyRecursiveType {
+        variable: TypeVariable,
+        ty: Type,
+    },
+    ArgumentLengthMismatch {
+        expected: usize,
+        actual: usize,
+    },
 }
 
-impl<'tcx, 'hir> hir::visit::Visitor for BodyTypeChecker<'tcx, 'hir> {
+#[derive(Debug)]
+enum TypeUsage {
+    ArithmeticOperation,
+    LogicalOperation,
+    FunctionCall,
+}
+
+impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
     /// Bind the types for function parameters
     fn visit_function_definition(
         &mut self,
@@ -623,23 +738,54 @@ impl<'tcx, 'hir> hir::visit::Visitor for BodyTypeChecker<'tcx, 'hir> {
             },
             hir::ExpressionKind::Block(block) => {
                 self.copy_type_from(expression.hir_id, block.hir_id);
-
-                // TODO: check that bare expressions in the middle of the block
-                // have a unit return type. put this in visit_block?
             }
             hir::ExpressionKind::FunctionCall { target, arguments } => {
                 // check that the target of the call is a function pointer
+
+                let target_ty = self.get_type(target.hir_id);
 
                 let TypeKind::FunctionPointer {
                     parameters,
                     return_type,
                     is_variadic,
-                } = &*self.get_type(target.hir_id)
+                } = &*target_ty
                 else {
-                    todo!(
-                        "report error: function call expression requires that target type be a function pointer"
-                    )
+                    let err = self.type_context.get_error_type();
+                    self.insert_type(expression.hir_id, err);
+
+                    self.errors.push(TypeError {
+                        origin: TypeConstraintOrigin {
+                            span: target.span,
+                            kind: TypeBoundary::FunctionCall,
+                        },
+                        kind: TypeErrorKind::InvalidOperation {
+                            attempted_usage: TypeUsage::FunctionCall,
+                            provided: target_ty.clone(),
+                        },
+                    });
+                    return;
                 };
+
+                // expression has the same type as the function's return type
+                self.insert_type(expression.hir_id, return_type.clone());
+
+                // Make sure the passed number of arguments matches the expected
+                // number (allowing variadics if applicable)
+                if arguments.len() < parameters.len()
+                    || (arguments.len() > parameters.len() && !*is_variadic)
+                {
+                    self.errors.push(TypeError {
+                        origin: TypeConstraintOrigin {
+                            span: expression.span,
+                            kind: TypeBoundary::FunctionCall,
+                        },
+                        kind: TypeErrorKind::ArgumentLengthMismatch {
+                            expected: parameters.len(),
+                            actual: arguments.len(),
+                        },
+                    });
+                    return;
+                }
 
                 // check that argument types match the target's call signature
                 for (parameter_ty, argument) in parameters.iter().zip(arguments.iter()) {
@@ -655,13 +801,127 @@ impl<'tcx, 'hir> hir::visit::Visitor for BodyTypeChecker<'tcx, 'hir> {
                     );
 
                     // TODO: respect permitence of variadic arguments, but
-                    // require them to be concrete types if present
+                    // require them to be concrete types if present (cant infer
+                    // variadics)
+                }
+            }
+            hir::ExpressionKind::Binary { lhs, operator, rhs } => {
+                let lhs_ty = self.get_type(lhs.hir_id);
+                let rhs_ty = self.get_type(rhs.hir_id);
+
+                match operator.class() {
+                    // If this is an arithmetic operator, require that both
+                    // types are arithmetic
+                    BinaryOperatorClass::Arithmetic => {
+                        let mut error = false;
+
+                        if !lhs_ty.is_arithmetic() {
+                            error = true;
+
+                            self.errors.push(TypeError {
+                                origin: TypeConstraintOrigin {
+                                    span: lhs.span,
+                                    kind: TypeBoundary::BinaryOp,
+                                },
+                                kind: TypeErrorKind::InvalidOperation {
+                                    attempted_usage: TypeUsage::ArithmeticOperation,
+                                    provided: lhs_ty.clone(),
+                                },
+                            });
+                        }
+
+                        if !rhs_ty.is_arithmetic() {
+                            error = true;
+
+                            self.errors.push(TypeError {
+                                origin: TypeConstraintOrigin {
+                                    span: rhs.span,
+                                    kind: TypeBoundary::BinaryOp,
+                                },
+                                kind: TypeErrorKind::InvalidOperation {
+                                    attempted_usage: TypeUsage::ArithmeticOperation,
+                                    provided: rhs_ty.clone(),
+                                },
+                            });
+                        }
+
+                        if error {
+                            let error_ty = self.type_context.get_error_type();
+                            self.insert_type(expression.hir_id, error_ty);
+
+                            return;
+                        }
+
+                        // For arithmetic operations the result is always the same as the inputs
+                        self.insert_type(expression.hir_id, lhs_ty.clone());
+                    }
+                    // If this is an arithmetic operator, require that both
+                    // types are bools
+                    class @ (BinaryOperatorClass::Logical | BinaryOperatorClass::Equality) => {
+                        let bool_ty = self.type_context.get_primitive_type(PrimitiveKind::Bool);
+
+                        // should this be a type constraint? maybe but it seems
+                        // like we can do all the logic here instead and
+                        // possibly report better errors
+                        if class == BinaryOperatorClass::Logical {
+                            let mut error = false;
+
+                            if !lhs_ty.is_bool() {
+                                error = true;
+
+                                self.errors.push(TypeError {
+                                    origin: TypeConstraintOrigin {
+                                        span: lhs.span,
+                                        kind: TypeBoundary::BinaryOp,
+                                    },
+                                    kind: TypeErrorKind::InvalidOperation {
+                                        attempted_usage: TypeUsage::LogicalOperation,
+                                        provided: lhs_ty.clone(),
+                                    },
+                                });
+                            }
+
+                            if !rhs_ty.is_bool() {
+                                error = true;
+
+                                self.errors.push(TypeError {
+                                    origin: TypeConstraintOrigin {
+                                        span: rhs.span,
+                                        kind: TypeBoundary::BinaryOp,
+                                    },
+                                    kind: TypeErrorKind::InvalidOperation {
+                                        attempted_usage: TypeUsage::LogicalOperation,
+                                        provided: rhs_ty.clone(),
+                                    },
+                                });
+                            }
+
+                            if error {
+                                let error_ty = self.type_context.get_error_type();
+                                self.insert_type(expression.hir_id, error_ty);
+
+                                return;
+                            }
+                        }
+
+                        // For arithmetic operations, the result is always a boolean no matter what
+                        self.insert_type(expression.hir_id, bool_ty);
+                    }
                 }
 
-                // expression has the same type as the function's return type
-                self.insert_type(expression.hir_id, return_type.clone());
+                // For operators like && and ||, the types need to be
+                // bools. For operators like == and !=, the types need
+                // to be the same. In either case we need to add this
+                // equality constraint.
+                self.create_type_constraint(
+                    lhs_ty.clone(),
+                    rhs_ty,
+                    TypeConstraintOrigin {
+                        span: expression.span,
+                        kind: TypeBoundary::BinaryOp,
+                    },
+                );
             }
-            hir::ExpressionKind::Binary { lhs, operator, rhs } => todo!(),
             hir::ExpressionKind::Unary { operator, operand } => todo!(),
             hir::ExpressionKind::Cast {
                 expression: castee,
@@ -669,6 +929,10 @@ impl<'tcx, 'hir> hir::visit::Visitor for BodyTypeChecker<'tcx, 'hir> {
             } => {
                 let castee_ty = self.get_type(castee.hir_id);
                 let target_ty = self.get_type(ty.hir_id);
+
+                // TODO: check if castee type is trivially coercible into the
+                // target type. we can do this in place since we know that
+                // inference won't affect the general class of types in use here
 
                 self.create_type_constraint(
                     target_ty.clone(),
@@ -684,7 +948,41 @@ impl<'tcx, 'hir> hir::visit::Visitor for BodyTypeChecker<'tcx, 'hir> {
                 condition,
                 positive,
                 negative,
-            } => todo!(),
+            } => {
+                let condition_ty = self.get_type(condition.hir_id);
+                let positive_ty = self.get_type(positive.hir_id);
+
+                if !condition_ty.is_bool() && !condition_ty.is_error() {
+                    let bool_ty = self.type_context.get_primitive_type(PrimitiveKind::Bool);
+
+                    self.errors.push(TypeError {
+                        origin: TypeConstraintOrigin {
+                            span: condition.span,
+                            kind: TypeBoundary::IfCondition,
+                        },
+                        kind: TypeErrorKind::TypeMismatch {
+                            expected: bool_ty,
+                            actual: condition_ty,
+                        },
+                    });
+                }
+
+                if let Some(n) = negative.as_ref() {
+                    let negative_ty = self.get_type(n.hir_id);
+
+                    self.create_type_constraint(
+                        positive_ty.clone(),
+                        negative_ty,
+                        TypeConstraintOrigin {
+                            // TODO: use the span of the last expr in the block chain (lol)
+                            span: n.span,
+                            kind: TypeBoundary::IfBlock,
+                        },
+                    );
+                }
+
+                self.insert_type(expression.hir_id, positive_ty);
+            }
             hir::ExpressionKind::While { condition, block } => todo!(),
             hir::ExpressionKind::Assignment { lhs, rhs } => todo!(),
             hir::ExpressionKind::OperatorAssignment { operator, lhs, rhs } => todo!(),
@@ -696,6 +994,40 @@ impl<'tcx, 'hir> hir::visit::Visitor for BodyTypeChecker<'tcx, 'hir> {
                 let ty = self.type_context.get_primitive_type(PrimitiveKind::Never);
                 self.insert_type(expression.hir_id, ty);
             }
+        }
+    }
+
+    fn visit_block(&mut self, block: Rc<hir::Block>) {
+        hir::visit::walk_block(self, block.clone());
+
+        for stmt in block.statements.iter() {
+            let hir::StatementKind::BareExpression(e) = &stmt.kind else {
+                continue;
+            };
+
+            let expr_ty = self.get_type(e.hir_id);
+            let unit_ty = self.type_context.get_unit_type();
+
+            if !expr_ty.is_unit() && !expr_ty.is_error() {
+                self.errors.push(TypeError {
+                    origin: TypeConstraintOrigin {
+                        // TODO: use the span of the last expr in the block
+                        span: e.span,
+                        kind: TypeBoundary::BareExpression,
+                    },
+                    kind: TypeErrorKind::TypeMismatch {
+                        expected: unit_ty,
+                        actual: expr_ty,
+                    },
+                });
+            }
+        }
+
+        if let Some(e) = &block.expression {
+            self.copy_type_from(block.hir_id, e.hir_id);
+        } else {
+            let unit_ty = self.type_context.get_unit_type();
+            self.insert_type(block.hir_id, unit_ty);
         }
     }
 }
@@ -712,8 +1044,8 @@ pub struct TypeCheckResults {
     node_types: BTreeMap<hir::ItemLocalId, Type>,
 }
 
-pub fn type_check_module(module: &hir::Module) -> ModuleTypeCheckResults {
-    let mut ctx = TypeContext::new(module);
+pub fn type_check_module(module: &hir::Module, source_file: &SourceFile) -> ModuleTypeCheckResults {
+    let mut ctx = TypeContext::new(module, source_file);
 
     // Compute types for top level items we might reference in body contexts
     let mut global_indexer = GlobalTypeEnvironmentIndexer {
@@ -725,13 +1057,16 @@ pub fn type_check_module(module: &hir::Module) -> ModuleTypeCheckResults {
         item_results: BTreeMap::new(),
     };
 
+    let mut tainted_with_errors = false;
+
     // Check the content of bodies and assign types to all nodes
     for owner_id in module.get_owners() {
-        let mut body_ctx = BodyTypeChecker {
+        let mut body_ctx = TypeChecker {
             type_context: &mut ctx,
             owner_id,
             node_to_type_map: BTreeMap::new(),
             constraints: Vec::new(),
+            errors: Vec::new(),
             next_integer_variable_id: IntVariableId::new(0),
             next_float_variable_id: FloatVariableId::new(0),
         };
@@ -739,16 +1074,24 @@ pub fn type_check_module(module: &hir::Module) -> ModuleTypeCheckResults {
         let OwnerNode::Item(item) = module.get_owner(owner_id).node();
         hir::visit::walk_item(&mut body_ctx, item);
 
-        println!("{:#?}", body_ctx.constraints);
+        // println!("{:#?}", body_ctx.constraints);
 
         match body_ctx.into_output() {
             Ok(output) => {
                 results.item_results.insert(owner_id, output);
             }
             Err(errors) => {
-                todo!("report errors: {errors:#?}")
+                tainted_with_errors = true;
+
+                for err in errors {
+                    ctx.report_error(err);
+                }
             }
         }
+    }
+
+    if tainted_with_errors {
+        std::process::exit(1);
     }
 
     results

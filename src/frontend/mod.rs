@@ -4,6 +4,7 @@ use colored::{Color, Colorize};
 use lexer::{Lexer, TokenKind};
 
 use self::lexer::Span;
+use crate::frontend::lexer::Keyword;
 
 pub mod ast;
 pub mod intern;
@@ -86,79 +87,91 @@ impl SourceFile {
             let mut lexer = Lexer::new(&source);
 
             let mut last_end = 0;
+            let mut last_token_kind = None::<TokenKind>;
 
             while let Some(token) = lexer.next() {
                 eprint!("{}", " ".repeat(token.span.start - last_end));
                 last_end = token.span.end;
 
                 let color = match token.kind {
-                    lexer::TokenKind::Keyword(_) => Color::Magenta,
-                    lexer::TokenKind::Identifier => {
+                    TokenKind::Keyword(_) => Color::Magenta,
+                    TokenKind::Identifier => {
                         if lexer.peek().is_some_and(|t| t.kind == TokenKind::OpenParen) {
                             Color::Blue
+                        } else if last_token_kind.is_some_and(|kind| {
+                            matches!(kind, TokenKind::Colon | TokenKind::Keyword(Keyword::As))
+                        }) {
+                            // TODO: for more accurate output, we could cache
+                            // the results of parsing to see what identifier
+                            // tokens turned into types
+                            Color::Yellow
                         } else {
                             Color::BrightWhite
                         }
                     }
-                    lexer::TokenKind::BooleanLiteral
-                    | lexer::TokenKind::ByteLiteral
-                    | lexer::TokenKind::CharLiteral
-                    | lexer::TokenKind::IntegerLiteral
-                    | lexer::TokenKind::FloatLiteral => Color::BrightYellow,
-                    lexer::TokenKind::StringLiteral
-                    | lexer::TokenKind::ByteStringLiteral
-                    | lexer::TokenKind::CStringLiteral => Color::Green,
-                    lexer::TokenKind::OpenParen
-                    | lexer::TokenKind::CloseParen
-                    | lexer::TokenKind::OpenBracket
-                    | lexer::TokenKind::CloseBracket
-                    | lexer::TokenKind::OpenBrace
-                    | lexer::TokenKind::CloseBrace
-                    | lexer::TokenKind::Semicolon
-                    | lexer::TokenKind::Comma
-                    | lexer::TokenKind::Colon
-                    | lexer::TokenKind::DoubleColon
-                    | lexer::TokenKind::Arrow
-                    | lexer::TokenKind::Bang
-                    | lexer::TokenKind::Tilde
-                    | lexer::TokenKind::Asterisk
-                    | lexer::TokenKind::Minus
-                    | lexer::TokenKind::Ampersand
-                    | lexer::TokenKind::Plus
-                    | lexer::TokenKind::Divide
-                    | lexer::TokenKind::Modulus
-                    | lexer::TokenKind::LogicalAnd
-                    | lexer::TokenKind::LogicalOr
-                    | lexer::TokenKind::BitwiseXor
-                    | lexer::TokenKind::BitwiseOr
-                    | lexer::TokenKind::ShiftLeft
-                    | lexer::TokenKind::ShiftRight
-                    | lexer::TokenKind::DoubleEquals
-                    | lexer::TokenKind::NotEquals
-                    | lexer::TokenKind::LessThan
-                    | lexer::TokenKind::LessThanOrEqualTo
-                    | lexer::TokenKind::GreaterThan
-                    | lexer::TokenKind::GreaterThanOrEqualTo
-                    | lexer::TokenKind::Equals
-                    | lexer::TokenKind::PlusEquals
-                    | lexer::TokenKind::MinusEquals
-                    | lexer::TokenKind::MultiplyEquals
-                    | lexer::TokenKind::DivideEquals
-                    | lexer::TokenKind::ModulusEquals
-                    | lexer::TokenKind::LogicalAndEquals
-                    | lexer::TokenKind::LogicalOrEquals
-                    | lexer::TokenKind::BitwiseXorEquals
-                    | lexer::TokenKind::BitwiseAndEquals
-                    | lexer::TokenKind::BitwiseOrEquals
-                    | lexer::TokenKind::ShiftLeftEquals
-                    | lexer::TokenKind::ShiftRightEquals => Color::White,
+                    TokenKind::BooleanLiteral
+                    | TokenKind::ByteLiteral
+                    | TokenKind::CharLiteral
+                    | TokenKind::IntegerLiteral
+                    | TokenKind::FloatLiteral => Color::BrightYellow,
+                    TokenKind::StringLiteral
+                    | TokenKind::ByteStringLiteral
+                    | TokenKind::CStringLiteral => Color::Green,
+                    TokenKind::OpenParen
+                    | TokenKind::CloseParen
+                    | TokenKind::OpenBracket
+                    | TokenKind::CloseBracket
+                    | TokenKind::OpenBrace
+                    | TokenKind::CloseBrace
+                    | TokenKind::Semicolon
+                    | TokenKind::Comma
+                    | TokenKind::Colon
+                    | TokenKind::DoubleColon
+                    | TokenKind::Arrow
+                    | TokenKind::Bang
+                    | TokenKind::Tilde
+                    | TokenKind::Asterisk
+                    | TokenKind::Minus
+                    | TokenKind::Ampersand
+                    | TokenKind::Plus
+                    | TokenKind::Divide
+                    | TokenKind::Modulus
+                    | TokenKind::LogicalAnd
+                    | TokenKind::LogicalOr
+                    | TokenKind::BitwiseXor
+                    | TokenKind::BitwiseOr
+                    | TokenKind::ShiftLeft
+                    | TokenKind::ShiftRight
+                    | TokenKind::DoubleEquals
+                    | TokenKind::NotEquals
+                    | TokenKind::LessThan
+                    | TokenKind::LessThanOrEqualTo
+                    | TokenKind::GreaterThan
+                    | TokenKind::GreaterThanOrEqualTo
+                    | TokenKind::Equals
+                    | TokenKind::PlusEquals
+                    | TokenKind::MinusEquals
+                    | TokenKind::MultiplyEquals
+                    | TokenKind::DivideEquals
+                    | TokenKind::ModulusEquals
+                    | TokenKind::LogicalAndEquals
+                    | TokenKind::LogicalOrEquals
+                    | TokenKind::BitwiseXorEquals
+                    | TokenKind::BitwiseAndEquals
+                    | TokenKind::BitwiseOrEquals
+                    | TokenKind::ShiftLeftEquals
+                    | TokenKind::ShiftRightEquals => Color::White,
                 };
 
                 eprint!("{}", source.value_of_span(token.span).color(color));
+
+                last_token_kind = Some(token.kind)
             }
 
             eprintln!()
         }
+
+        // TODO: better highlight multi-line spans
 
         let prepending_count = span_starting_column + 4;
         let token_width = if span_ending_row == span_starting_row {

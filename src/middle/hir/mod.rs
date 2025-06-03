@@ -9,6 +9,7 @@ use std::{collections::BTreeMap, rc::Rc};
 use super::primitive::{FloatKind, IntKind, PrimitiveKind, UIntKind};
 use crate::{
     frontend::{
+        SourceFile,
         ast::{AssignmentOperatorKind, BinaryOperatorKind, UnaryOperatorKind},
         intern::InternedSymbol,
         lexer::Span,
