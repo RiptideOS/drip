@@ -235,6 +235,7 @@ impl<'hir> TypeContext<'hir> {
                 TypeBoundary::ImplicitReturn =>  format!("expected function to return type {expected} but no implicit or explicit returns found"),
                 _ => unreachable!()
             },
+            TypeErrorKind::InvalidCast { from, to } => format!("non-trivial cast from {from} to {to}"),
         };
 
         eprintln!(
@@ -318,9 +319,14 @@ struct TypeChecker<'tcx, 'hir> {
 
 #[derive(Debug)]
 struct TypeConstraint {
-    left: Type,
-    right: Type,
+    kind: TypeConstraintKind,
     origin: TypeConstraintOrigin,
+}
+
+#[derive(Debug)]
+enum TypeConstraintKind {
+    Equal { left: Type, right: Type },
+    Cast { from: Type, to: Type },
 }
 
 #[derive(Debug)]
@@ -397,10 +403,17 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
     }
 
     /// Adds a constraint that the left type should equal the right type
-    fn create_type_constraint(&mut self, left: Type, right: Type, origin: TypeConstraintOrigin) {
+    fn add_equality_constraint(&mut self, left: Type, right: Type, origin: TypeConstraintOrigin) {
         self.constraints.push(TypeConstraint {
-            left,
-            right,
+            kind: TypeConstraintKind::Equal { left, right },
+            origin,
+        });
+    }
+
+    /// Adds a constraint that `from` needs to be able to be cast to `to`
+    fn add_cast_constraint(&mut self, from: Type, to: Type, origin: TypeConstraintOrigin) {
+        self.constraints.push(TypeConstraint {
+            kind: TypeConstraintKind::Cast { from, to },
             origin,
         });
     }
@@ -451,19 +464,43 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
         }
     }
 
-    fn unify_constraints(&mut self) -> (SubstitutionMap, Vec<TypeError>) {
+    fn solve_constraints(&mut self) -> (SubstitutionMap, Vec<TypeError>) {
         let mut substitution_map = SubstitutionMap::new();
+        let mut defered_casts: Vec<TypeConstraint> = vec![];
         let mut errors = vec![];
 
-        for TypeConstraint {
-            left,
-            right,
-            origin,
-        } in core::mem::take(&mut self.constraints)
-        {
-            match self.unify(left, right, &mut substitution_map) {
-                Ok(_) => {}
-                Err(e) => errors.push(TypeError { origin, kind: e }),
+        for constraint in core::mem::take(&mut self.constraints) {
+            match &constraint.kind {
+                TypeConstraintKind::Equal { left, right } => {
+                    if let Err(e) = self.unify(left.clone(), right.clone(), &mut substitution_map) {
+                        errors.push(TypeError {
+                            origin: constraint.origin,
+                            kind: e,
+                        })
+                    }
+                }
+                TypeConstraintKind::Cast { from, to } => {
+                    if self
+                        .solve_cast(from.clone(), to.clone(), &mut substitution_map, false)
+                        .is_err()
+                    {
+                        defered_casts.push(constraint);
+                    }
+                }
+            }
+        }
+
+        // Do a second pass after we've done all our substitutions
+        for constraint in defered_casts {
+            let TypeConstraintKind::Cast { from, to } = constraint.kind else {
+                unreachable!()
+            };
+
+            if let Err(e) = self.solve_cast(from, to, &mut substitution_map, true) {
+                errors.push(TypeError {
+                    origin: constraint.origin,
+                    kind: e,
+                })
             }
         }
 
@@ -521,6 +558,62 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
                 expected: t1,
                 actual: t2,
             }),
+        }
+    }
+
+    /// Checks that `from` may be cast to `to`, potentially coercing `from` if
+    /// it is a free type variable
+    fn solve_cast(
+        &mut self,
+        from: Type,
+        to: Type,
+        substitution_map: &mut SubstitutionMap,
+        coerce_type_variables: bool,
+    ) -> Result<(), TypeErrorKind> {
+        assert!(
+            to.free_type_variables().is_empty(),
+            "attempted to solve cast to non-concrete type: {to}"
+        );
+
+        let from = self.apply_substitution(substitution_map, from);
+
+        match (&*from, &*to) {
+            (_, TypeKind::Infer(_)) => unreachable!(),
+            // Trivially possible case
+            (from_kind, to_kind) if from_kind == to_kind => Ok(()),
+            // If the source type is a free type variable, just coerce it into
+            // the target type if allowed for the variable kind and coersion is
+            // enabled
+            (TypeKind::Infer(variable), ty_kind) => {
+                let coercable = {
+                    match variable {
+                        TypeVariable::Int(_) => ty_kind.is_integer_like(),
+                        TypeVariable::Float(_) => ty_kind.is_float_like(),
+                    }
+                };
+
+                if coercable && coerce_type_variables {
+                    substitution_map.insert(*variable, to);
+                    return Ok(());
+                }
+
+                Err(TypeErrorKind::InvalidCast { from, to })
+            }
+            // Allow casting between any numeric types
+            (
+                TypeKind::Integer(_) | TypeKind::UnsignedInteger(_) | TypeKind::Float(_),
+                TypeKind::Integer(_) | TypeKind::UnsignedInteger(_) | TypeKind::Float(_),
+            ) => Ok(()),
+            // Allow casting between integer types and bools
+            (
+                TypeKind::Integer(_) | TypeKind::UnsignedInteger(_) | TypeKind::Bool,
+                TypeKind::Integer(_) | TypeKind::UnsignedInteger(_) | TypeKind::Bool,
+            ) => Ok(()),
+            (TypeKind::Char, TypeKind::UnsignedInteger(UIntKind::U32)) => Ok(()),
+            // Allow pointer type hacking
+            (TypeKind::Pointer(_), TypeKind::Pointer(_)) => Ok(()),
+            // Anything not explicitly allowed is an error
+            _ => Err(TypeErrorKind::InvalidCast { from, to }),
         }
     }
 
@@ -610,8 +703,8 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
     /// was able to do so successfully
     pub fn into_output(mut self) -> Result<TypeCheckResults, Vec<TypeError>> {
         // Solve the collected constraints
-        let (substitution_map, mut errors) = self.unify_constraints();
-         self.errors.append(&mut errors);
+        let (substitution_map, mut errors) = self.solve_constraints();
+        self.errors.append(&mut errors);
 
         // If we unified successfully but had other problems before, stop here
         if !self.errors.is_empty() {
@@ -780,6 +873,10 @@ enum TypeErrorKind {
     MissingReturnValue {
         expected: Type,
     },
+    InvalidCast {
+        from: Type,
+        to: Type,
+    },
 }
 
 impl TypeErrorKind {
@@ -791,7 +888,8 @@ impl TypeErrorKind {
             TypeErrorKind::InfinitelyRecursiveType { .. }
             | TypeErrorKind::ArgumentLengthMismatch { .. }
             | TypeErrorKind::CannotInfer
-            | TypeErrorKind::IllegalLoopControlFlow(_) => vec![],
+            | TypeErrorKind::IllegalLoopControlFlow(_)
+            | TypeErrorKind::InvalidCast { .. } => vec![],
         }
     }
 }
@@ -814,7 +912,7 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
     /// Bind the types for function parameters
     fn visit_function_definition(
         &mut self,
-        name: &hir::Identifier,
+        _name: &hir::Identifier,
         signature: &hir::FunctionSignature,
         body: hir::BodyId,
     ) {
@@ -845,7 +943,7 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
             // The body's implicit return type needs to match the function's signature
 
             let last_expr_ty = self.get_type(last_expr.hir_id);
-            self.create_type_constraint(
+            self.add_equality_constraint(
                 return_ty,
                 last_expr_ty,
                 TypeConstraintOrigin {
@@ -967,7 +1065,7 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                     .insert(let_stmt.hir_id.local_id, explicit);
             }
             (Some(explicit), Some(initializer)) => {
-                self.create_type_constraint(
+                self.add_equality_constraint(
                     explicit.clone(),
                     initializer,
                     TypeConstraintOrigin {
@@ -1070,7 +1168,7 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                 for (parameter_ty, argument) in parameters.iter().zip(arguments.iter()) {
                     let argument_ty = self.get_type(argument.hir_id);
 
-                    self.create_type_constraint(
+                    self.add_equality_constraint(
                         parameter_ty.clone(),
                         argument_ty,
                         TypeConstraintOrigin {
@@ -1189,7 +1287,7 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                 // bools. For operators like == and !=, the types need
                 // to be the same. In either case we need to add this
                 // equality constraint.
-                self.create_type_constraint(
+                self.add_equality_constraint(
                     lhs_ty.clone(),
                     rhs_ty,
                     TypeConstraintOrigin {
@@ -1280,13 +1378,13 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                 let castee_ty = self.get_type(castee.hir_id);
                 let target_ty = self.get_type(ty.hir_id);
 
-                // TODO: check if castee type is trivially coercible into the
-                // target type. we can do this in place since we know that
-                // inference won't affect the general class of types in use here
-
-                self.create_type_constraint(
-                    target_ty.clone(),
+                // We know that the target type cannot have any free type
+                // variables because it can only be a named concrete type. This
+                // may change however if we add a "typeof" mechanism or
+                // equivalent.
+                self.add_cast_constraint(
                     castee_ty,
+                    target_ty.clone(),
                     TypeConstraintOrigin {
                         span: expression.span,
                         kind: TypeBoundary::Cast,
@@ -1320,7 +1418,7 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                 if let Some(n) = negative.as_ref() {
                     let negative_ty = self.get_type(n.hir_id);
 
-                    self.create_type_constraint(
+                    self.add_equality_constraint(
                         positive_ty.clone(),
                         negative_ty,
                         TypeConstraintOrigin {
@@ -1373,7 +1471,7 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                 let rhs_ty = self.get_type(rhs.hir_id);
                 let unit_ty = self.type_context.get_unit_type();
 
-                self.create_type_constraint(
+                self.add_equality_constraint(
                     lhs_ty,
                     rhs_ty,
                     TypeConstraintOrigin {
@@ -1480,7 +1578,7 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                 // bools. For operators like += and -=, the types need
                 // to be the same. In either case we need to add this
                 // equality constraint.
-                self.create_type_constraint(
+                self.add_equality_constraint(
                     lhs_ty.clone(),
                     rhs_ty,
                     TypeConstraintOrigin {
@@ -1517,7 +1615,7 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                     let value_ty = self.get_type(v.hir_id);
 
                     if value_ty != return_ty {
-                        self.create_type_constraint(
+                        self.add_equality_constraint(
                             value_ty,
                             return_ty,
                             TypeConstraintOrigin {
