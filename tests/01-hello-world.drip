@@ -1,9 +1,3 @@
-fn main(argv: **cstr, argc: usize)  -> i32 {
-    // println("Hello, world")
-
-    let a = 1;
-    a += 1.0;
-    let b = a as i64;
-
-    2
+fn main(argv: **cstr, argc: usize)  -> u8 {
+    println("Hello, world")
 }
