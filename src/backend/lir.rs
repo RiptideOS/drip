@@ -35,3 +35,7 @@ pub struct LirRegister {
 pub struct LirLabel {
     pub id: u32,
 }
+
+pub enum LirIntruction {
+    LoadLocal
+}

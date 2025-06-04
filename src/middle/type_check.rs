@@ -259,6 +259,7 @@ impl<'hir> TypeContext<'hir> {
             },
             TypeErrorKind::InvalidCast { from, to } => format!("non-trivial cast from {from} to {to}"),
             TypeErrorKind::TupleLengthMismatch { expected, actual } => format!("tuples have different arity, expected {expected} parameters but found {actual}"),
+             TypeErrorKind::ArrayLengthMismatch { expected, actual } => format!("arrays have different length, expected {expected} parameters but found {actual}"),
         };
 
         eprintln!(
@@ -531,7 +532,8 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
     }
 
     /// Attempts to equate the provided types using our type system's inference
-    /// and coersion rules.
+    /// and coersion rules. For any recursive unifications, we only return the
+    /// top most error to provide the most context
     fn unify(
         &mut self,
         t1: Type,
@@ -577,8 +579,50 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
             }
 
             // Pointee types need to be equal
-            (TypeKind::Pointer(t1), TypeKind::Pointer(t2)) => {
-                self.unify(t1.clone(), t2.clone(), substitution_map)
+            (TypeKind::Pointer(left), TypeKind::Pointer(right))
+            | (TypeKind::Slice(left), TypeKind::Slice(right)) => {
+                if self
+                    .unify(left.clone(), right.clone(), substitution_map)
+                    .is_err()
+                {
+                    return Err(TypeErrorKind::TypeMismatch {
+                        expected: t1,
+                        actual: t2,
+                    });
+                }
+
+                Ok(())
+            }
+
+            // Must have same inner type and length
+            (
+                TypeKind::Array {
+                    ty: left_ty,
+                    length: left_len,
+                },
+                TypeKind::Array {
+                    ty: right_ty,
+                    length: right_len,
+                },
+            ) => {
+                if left_len != right_len {
+                    return Err(TypeErrorKind::ArrayLengthMismatch {
+                        expected: *left_len,
+                        actual: *right_len,
+                    });
+                }
+
+                if self
+                    .unify(left_ty.clone(), right_ty.clone(), substitution_map)
+                    .is_err()
+                {
+                    return Err(TypeErrorKind::TypeMismatch {
+                        expected: t1,
+                        actual: t2,
+                    });
+                }
+
+                Ok(())
             }
 
             // For tuple types, all sub types need to be equal too
@@ -603,6 +647,10 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
                 }
 
                 Ok(())
+            }
+
+            (TypeKind::FunctionPointer { .. }, TypeKind::FunctionPointer { .. }) => {
+                todo!("unify function pointer types")
             }
 
             // Any other type combination
@@ -930,6 +978,8 @@ enum TypeErrorKind {
     InvalidCast { from: Type, to: Type },
     /// Tuples that should compare equal had different arity
     TupleLengthMismatch { expected: usize, actual: usize },
+    /// Arrays that should compare equal need to be of the same length
+    ArrayLengthMismatch { expected: usize, actual: usize },
 }
 
 impl TypeErrorKind {
@@ -943,7 +993,8 @@ impl TypeErrorKind {
             | TypeErrorKind::CannotInfer
             | TypeErrorKind::IllegalLoopControlFlow(_)
             | TypeErrorKind::InvalidCast { .. }
-            | TypeErrorKind::TupleLengthMismatch { .. } => vec![],
+            | TypeErrorKind::TupleLengthMismatch { .. }
+            | TypeErrorKind::ArrayLengthMismatch { .. } => vec![],
         }
     }
 }
@@ -1469,15 +1520,19 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                 if let Some(n) = negative.as_ref() {
                     let negative_ty = self.get_type(n.hir_id);
 
-                    self.add_equality_constraint(
-                        positive_ty.clone(),
-                        negative_ty,
-                        TypeConstraintOrigin {
-                            // TODO: use the span of the last expr in the block chain (lol)
-                            span: n.span,
-                            kind: TypeBoundary::IfBlock,
-                        },
-                    );
+                    // If either branch diverges, we dont care to make sure that
+                    // the types match
+                    if !positive_ty.is_never() && !negative_ty.is_never() {
+                        self.add_equality_constraint(
+                            positive_ty.clone(),
+                            negative_ty,
+                            TypeConstraintOrigin {
+                                // TODO: use the span of the last expr in the block chain (lol)
+                                span: n.span,
+                                kind: TypeBoundary::IfBlock,
+                            },
+                        );
+                    }
                 }
 
                 self.insert_type(expression.hir_id, positive_ty);
@@ -1502,7 +1557,7 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                     });
                 }
 
-                if !block_ty.is_unit() {
+                if !block_ty.is_unit() && !block_ty.is_never() {
                     self.errors.push(TypeError {
                         origin: TypeConstraintOrigin {
                             span: condition.span,
