@@ -303,6 +303,7 @@ pub enum ExpressionKind {
     Literal(Literal),
     Path(Path),
     Block(Rc<Block>),
+    Tuple(Rc<[Rc<Expression>]>),
     FunctionCall {
         target: Rc<Expression>,
         arguments: Rc<[Rc<Expression>]>,
@@ -381,6 +382,7 @@ pub struct Type {
 
 #[derive(Debug)]
 pub enum TypeKind {
+    Unit,
     /// core::string::String | u32 | some_local
     Path(Path),
     /// *T
@@ -389,6 +391,8 @@ pub enum TypeKind {
     Slice(Rc<Type>),
     /// [T; 1024]
     Array { ty: Rc<Type>, length: usize },
+    /// (i32, u8, str)
+    Tuple(Rc<[Rc<Type>]>),
     /// fn(T1, T2, ... *any) -> T3
     FunctionPointer {
         parameters: Rc<[Rc<Type>]>,
@@ -428,7 +432,7 @@ pub enum Resolution<R = ItemLocalId> {
     Definition(DefinitionKind, LocalDefId),
     // Value namespace
     Local(R),
-    IntrinsicFunction,
+    IntrinsicFunction(InternedSymbol),
     // Type namespace
     Primitive(PrimitiveKind),
 }

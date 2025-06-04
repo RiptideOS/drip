@@ -45,14 +45,6 @@ pub enum TypeKind {
     UnsignedInteger(UIntKind),
     /// f32, f64
     Float(FloatKind),
-    /// *T
-    ///
-    /// A raw pointer to a T
-    Pointer(Type),
-    /// [T]
-    ///
-    /// A pointer and length to some amount of T's
-    Slice(Type),
     /// str
     ///
     /// A pointer and length to some UTF-8 data
@@ -62,6 +54,14 @@ pub enum TypeKind {
     /// A raw pointer which is guaranteed to point to a valid, null terminated,
     /// ASCII C-style string
     CStr,
+    /// *T
+    ///
+    /// A raw pointer to a T
+    Pointer(Type),
+    /// [T]
+    ///
+    /// A pointer and length to some amount of T's
+    Slice(Type),
     /// [T; <length>]
     ///
     /// A raw pointer to a fixed size allocation of T's
@@ -69,6 +69,10 @@ pub enum TypeKind {
         ty: Type,
         length: usize,
     },
+    /// (f32, u8, str)
+    ///
+    /// A fixed size list of different types
+    Tuple(Rc<[Type]>),
     /// fn(i32, str, *T) -> u8
     ///
     /// A raw pointer to a function body
@@ -138,6 +142,7 @@ impl TypeKind {
             | TypeKind::Str
             | TypeKind::CStr
             | TypeKind::Array { .. }
+            | TypeKind::Tuple(_)
             | TypeKind::FunctionPointer { .. }
             | TypeKind::Any
             | TypeKind::Error => false,
@@ -193,6 +198,16 @@ impl TypeKind {
             TypeKind::Pointer(inner)
             | TypeKind::Slice(inner)
             | TypeKind::Array { ty: inner, .. } => inner.free_type_variables(),
+
+            TypeKind::Tuple(types) => {
+                let mut res = HashSet::new();
+
+                for ty in types.iter() {
+                    res.extend(ty.free_type_variables());
+                }
+
+                res
+            }
             TypeKind::FunctionPointer {
                 parameters,
                 return_type,
@@ -223,11 +238,22 @@ impl core::fmt::Display for TypeKind {
             Self::Integer(int_kind) => write!(f, "{int_kind}"),
             Self::UnsignedInteger(uint_kind) => write!(f, "{uint_kind}"),
             Self::Float(float_kind) => write!(f, "{float_kind}"),
-            Self::Pointer(ty) => write!(f, "*{}", **ty),
-            Self::Slice(ty) => write!(f, "[{}]", **ty),
             Self::Str => write!(f, "str"),
             Self::CStr => write!(f, "cstr"),
+            Self::Pointer(ty) => write!(f, "*{}", **ty),
+            Self::Slice(ty) => write!(f, "[{}]", **ty),
             Self::Array { ty, length } => write!(f, "[{}; {length}]", **ty),
+            Self::Tuple(types) => {
+                write!(f, "(")?;
+                for (i, ty) in types.iter().enumerate() {
+                    write!(f, "{}", **ty)?;
+                    
+                    if i != types.len() - 1 {
+                        write!(f, ", ")?;
+                    }
+                }
+                write!(f, ")")
+            }
             Self::FunctionPointer { .. } => todo!("Format function pointers"),
             Self::Any => write!(f, "*any"),
             Self::Infer(type_variable) => match type_variable {

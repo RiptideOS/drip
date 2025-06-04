@@ -96,6 +96,7 @@ impl<'hir> TypeContext<'hir> {
 
     fn compute_hir_type(&mut self, ty: Rc<hir::Type>) -> Type {
         match &ty.kind {
+            hir::TypeKind::Unit => self.get_unit_type(),
             hir::TypeKind::Path(path) => self.compute_hir_resolution_type(*path.resolution()),
             hir::TypeKind::Pointer(ty) => {
                 let inner = self.compute_hir_type(ty.clone());
@@ -111,6 +112,14 @@ impl<'hir> TypeContext<'hir> {
                     ty: inner,
                     length: *length,
                 })
+            }
+            hir::TypeKind::Tuple(types) => {
+                let types = types
+                    .iter()
+                    .map(|ty| self.compute_hir_type(ty.clone()))
+                    .collect();
+
+                self.intern_type(TypeKind::Tuple(types))
             }
             hir::TypeKind::FunctionPointer {
                 parameters,
@@ -144,6 +153,19 @@ impl<'hir> TypeContext<'hir> {
                 todo!("compute user defined types")
             }
             hir::Resolution::Primitive(primitive_kind) => self.get_primitive_type(primitive_kind),
+            hir::Resolution::IntrinsicFunction(name) => match name.value() {
+                "println" => {
+                    let unit_ty = self.get_unit_type();
+                    let str_ty = self.get_primitive_type(PrimitiveKind::Str);
+
+                    self.intern_type(TypeKind::FunctionPointer {
+                        parameters: [str_ty].into(),
+                        return_type: unit_ty,
+                        is_variadic: true,
+                    })
+                }
+                _ => unreachable!(),
+            },
             r => unreachable!("encountered value resolution in type namespace: {r:?}"),
         }
     }
@@ -236,6 +258,7 @@ impl<'hir> TypeContext<'hir> {
                 _ => unreachable!()
             },
             TypeErrorKind::InvalidCast { from, to } => format!("non-trivial cast from {from} to {to}"),
+            TypeErrorKind::TupleLengthMismatch { expected, actual } => format!("tuples have different arity, expected {expected} parameters but found {actual}"),
         };
 
         eprintln!(
@@ -522,7 +545,7 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
             // Both already the same type (trivial)
             (t1, t2) if t1 == t2 => Ok(()),
 
-            // One is an integral inference type and one is an integer type
+            // One is a a type variable
             (TypeKind::Infer(variable), ty_kind) | (ty_kind, TypeKind::Infer(variable)) => {
                 // It is guaranteed that this type is already interned, but I
                 // cant figure out a nicer way to write this
@@ -549,6 +572,35 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
                 }
 
                 substitution_map.insert(*variable, ty);
+
+                Ok(())
+            }
+
+            // Pointee types need to be equal
+            (TypeKind::Pointer(t1), TypeKind::Pointer(t2)) => {
+                self.unify(t1.clone(), t2.clone(), substitution_map)
+            }
+
+            // For tuple types, all sub types need to be equal too
+            (TypeKind::Tuple(types1), TypeKind::Tuple(types2)) => {
+                if types1.len() != types2.len() {
+                    return Err(TypeErrorKind::TupleLengthMismatch {
+                        expected: types1.len(),
+                        actual: types2.len(),
+                    });
+                }
+
+                for (left, right) in types1.iter().zip(types2.iter()) {
+                    if self
+                        .unify(left.clone(), right.clone(), substitution_map)
+                        .is_err()
+                    {
+                        return Err(TypeErrorKind::TypeMismatch {
+                            expected: t1,
+                            actual: t2,
+                        });
+                    }
+                }
 
                 Ok(())
             }
@@ -630,6 +682,9 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
             | TypeKind::Array { ty: inner, .. } => {
                 self.occurs_in(var, inner.clone(), substitution_map)
             }
+            TypeKind::Tuple(types) => types
+                .iter()
+                .any(|ty| self.occurs_in(var, ty.clone(), substitution_map)),
             TypeKind::FunctionPointer {
                 parameters,
                 return_type,
@@ -677,6 +732,14 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
                     ty: substituted,
                     length: *length,
                 })
+            }
+            TypeKind::Tuple(types) => {
+                let types = types
+                    .iter()
+                    .map(|ty| self.apply_substitution(substitution_map, ty.clone()))
+                    .collect();
+
+                self.type_context.intern_type(TypeKind::Tuple(types))
             }
             TypeKind::FunctionPointer {
                 parameters,
@@ -841,10 +904,7 @@ enum TypeErrorKind {
     /// should be, not for generic requirements like "binary ops should have
     /// arithmetic types". For that, we use
     /// [`InvalidOperation`](`Self::InvalidOperation`)
-    TypeMismatch {
-        expected: Type,
-        actual: Type,
-    },
+    TypeMismatch { expected: Type, actual: Type },
     /// The provided type does not support the operation it is used in. For
     /// example, using a str in an arithmetic expression, or using an int as the
     /// target of a function call expression.
@@ -856,27 +916,20 @@ enum TypeErrorKind {
     /// possible to happen in our type system, but maybe it could happen in the
     /// future depending on the features we add so its good to implement it
     /// early on
-    InfinitelyRecursiveType {
-        variable: TypeVariable,
-        ty: Type,
-    },
-    ArgumentLengthMismatch {
-        expected: usize,
-        actual: usize,
-    },
+    InfinitelyRecursiveType { variable: TypeVariable, ty: Type },
+    /// Number of args provided to function do not match its call signature
+    ArgumentLengthMismatch { expected: usize, actual: usize },
     /// Local binding declared with no explicit type and no initializer
     CannotInfer,
     /// Tried to use break or continue outside loop context
     IllegalLoopControlFlow(LoopControlFlowKind),
     /// If function's return type is not `()`, return expressions must contain a
     /// value
-    MissingReturnValue {
-        expected: Type,
-    },
-    InvalidCast {
-        from: Type,
-        to: Type,
-    },
+    MissingReturnValue { expected: Type },
+    /// Tried to perform non-trivial cast
+    InvalidCast { from: Type, to: Type },
+    /// Tuples that should compare equal had different arity
+    TupleLengthMismatch { expected: usize, actual: usize },
 }
 
 impl TypeErrorKind {
@@ -889,7 +942,8 @@ impl TypeErrorKind {
             | TypeErrorKind::ArgumentLengthMismatch { .. }
             | TypeErrorKind::CannotInfer
             | TypeErrorKind::IllegalLoopControlFlow(_)
-            | TypeErrorKind::InvalidCast { .. } => vec![],
+            | TypeErrorKind::InvalidCast { .. }
+            | TypeErrorKind::TupleLengthMismatch { .. } => vec![],
         }
     }
 }
@@ -1094,27 +1148,24 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                 hir::Resolution::Local(local_id) => {
                     self.copy_type_from(expression.hir_id, *local_id);
                 }
-                hir::Resolution::IntrinsicFunction => {
-                    let ty = match path.segments.last().unwrap().identifier.symbol.value() {
-                        "println" => {
-                            let unit = self.type_context.get_unit_type();
-                            let string = self.type_context.get_primitive_type(PrimitiveKind::Str);
-
-                            self.type_context.intern_type(TypeKind::FunctionPointer {
-                                parameters: [string].into(),
-                                return_type: unit,
-                                is_variadic: true,
-                            })
-                        }
-                        _ => unreachable!(),
-                    };
-
-                    self.insert_type(expression.hir_id, ty);
+                hir::Resolution::IntrinsicFunction(_) => {
+                    self.copy_type_from(expression.hir_id, path.segments.last().unwrap().hir_id);
                 }
                 _ => unreachable!("encountered type resolution in value namespace"),
             },
             hir::ExpressionKind::Block(block) => {
                 self.copy_type_from(expression.hir_id, block.hir_id);
+            }
+            hir::ExpressionKind::Tuple(expressions) => {
+                let expression_tys = expressions
+                    .iter()
+                    .map(|e| self.get_type(e.hir_id))
+                    .collect();
+                let ty = self
+                    .type_context
+                    .intern_type(TypeKind::Tuple(expression_tys));
+
+                self.insert_type(expression.hir_id, ty);
             }
             hir::ExpressionKind::FunctionCall { target, arguments } => {
                 // check that the target of the call is a function pointer

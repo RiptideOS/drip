@@ -257,13 +257,14 @@ impl<'source> Parser<'source> {
 
     // type = "*" ( "any" | type )
     //        | "[" type ( ";" INTEGER )?  "]"
+    //        | "(" type ( "," type )*  ")"
     //        | "fn" "(" ( type ( "," type )* )? ( "," "..." "[" type "]" ) ")" ( "->" type )?
     //        | PRIMITIVE | "str" | "cstr"
     //        | IDENTIFIER
     fn parse_type(&mut self) -> Type {
         // Raw pointers and `any` pointers
         if self
-            .expect_peek("asterisk, open bracket, fn keyword, or identifier")
+            .expect_peek("asterisk, open bracket, open paren, fn keyword, or identifier")
             .kind
             == TokenKind::Asterisk
         {
@@ -295,7 +296,7 @@ impl<'source> Parser<'source> {
         // Slices and Arrays
 
         if self
-            .expect_peek(" open bracket, fn keyword, or identifier")
+            .expect_peek("open bracket, open paren, fn keyword, or identifier")
             .kind
             == TokenKind::OpenBracket
         {
@@ -331,6 +332,53 @@ impl<'source> Parser<'source> {
                 kind: TypeKind::Slice(Box::new(ty)),
             };
         }
+
+        // Unit & Tuples
+
+        if self
+            .expect_peek("open paren, fn keyword, or identifier")
+            .kind
+            == TokenKind::OpenParen
+        {
+            let open_paren = self.expect_next_to_be(TokenKind::OpenParen);
+
+            // Parse unit type `()`
+            if self.expect_peek("close paren").kind == TokenKind::CloseParen {
+                let close_paren = self.expect_next_to_be(TokenKind::CloseParen);
+
+                return Type {
+                    id: self.create_node_id(),
+                    span: Span::new(open_paren.span.start, close_paren.span.end),
+                    kind: TypeKind::Unit,
+                };
+            }
+
+            let mut types = Vec::new();
+
+            // If a close paren was not found then there MUST be at least one
+            // parameter
+            types.push(self.parse_type());
+
+            // While the next token is a comma try and parse more parameters
+            while self
+                .lexer
+                .peek()
+                .is_some_and(|t| t.kind == TokenKind::Comma)
+            {
+                self.expect_next_to_be(TokenKind::Comma);
+                types.push(self.parse_type());
+            }
+
+            let close_paren = self.expect_next_to_be(TokenKind::CloseParen);
+
+            return Type {
+                id: self.create_node_id(),
+                span: Span::new(open_paren.span.start, close_paren.span.end),
+                kind: TypeKind::Tuple(types.into()),
+            };
+        }
+
+        // Function pointers
 
         if self.expect_peek("fn keyword or identifier").kind == TokenKind::Keyword(Keyword::Fn) {
             todo!("Parse function pointer type")
@@ -513,7 +561,7 @@ impl<'source> Parser<'source> {
     ///                   | "while" expression BLOCK
     ///                   | atom
     /// atom           -> IDENTIFIER | NUMBER | STRING | BOOL
-    ///                   | "(" expression ")"
+    ///                   | "(" expression ( "," expression )* ")"
     fn parse_expression(&mut self) -> Expression {
         // We start from the top and work our way down.
 
@@ -1170,6 +1218,30 @@ impl<'source> Parser<'source> {
     fn parse_grouping_expression(&mut self) -> Expression {
         let open_paren = self.expect_next_to_be(TokenKind::OpenParen);
         let expression = self.parse_expression();
+
+        // Parse tuple
+        if self.expect_peek("open paren, or literal expression").kind == TokenKind::Comma {
+            let mut expressions = vec![expression];
+
+            // While the next token is a comma try and parse more parameters
+            while self
+                .lexer
+                .peek()
+                .is_some_and(|t| t.kind == TokenKind::Comma)
+            {
+                self.expect_next_to_be(TokenKind::Comma);
+                expressions.push(self.parse_expression());
+            }
+
+            let close_paren = self.expect_next_to_be(TokenKind::CloseParen);
+
+            return Expression {
+                id: self.create_node_id(),
+                span: Span::new(open_paren.span.start, close_paren.span.end),
+                kind: ExpressionKind::Tuple(expressions.into()),
+            };
+        }
+
         let close_paren = self.expect_next_to_be(TokenKind::CloseParen);
 
         Expression {

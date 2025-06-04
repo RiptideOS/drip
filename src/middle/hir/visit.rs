@@ -82,7 +82,7 @@ pub enum BlockContext {
     /// New scope within another block (include if-else blocks)
     Scope,
     /// The block of a while or for expression
-    Loop
+    Loop,
 }
 
 pub fn walk_module(visitor: &mut impl Visitor, module: &Module) {
@@ -140,6 +140,7 @@ pub fn walk_type(visitor: &mut impl Visitor, ty: Rc<Type>) {
         TypeKind::Pointer(ty) => visitor.visit_type(ty.clone()),
         TypeKind::Slice(ty) => visitor.visit_type(ty.clone()),
         TypeKind::Array { ty, .. } => visitor.visit_type(ty.clone()),
+        TypeKind::Tuple(types) => types.iter().for_each(|ty| visitor.visit_type(ty.clone())),
         TypeKind::FunctionPointer {
             parameters,
             return_type,
@@ -153,7 +154,7 @@ pub fn walk_type(visitor: &mut impl Visitor, ty: Rc<Type>) {
                 visitor.visit_type(ty.clone());
             }
         }
-        TypeKind::Any => {}
+        TypeKind::Unit | TypeKind::Any => {}
     }
 }
 
@@ -210,6 +211,9 @@ pub fn walk_expression(visitor: &mut impl Visitor, expression: Rc<Expression>) {
         ExpressionKind::Literal(literal) => visitor.visit_literal(literal),
         ExpressionKind::Path(path) => visitor.visit_path(path),
         ExpressionKind::Block(block) => visitor.visit_block(block.clone(), BlockContext::Scope),
+        ExpressionKind::Tuple(expressions) => expressions
+            .iter()
+            .for_each(|e| visitor.visit_expression(e.clone())),
         ExpressionKind::FunctionCall { target, arguments } => {
             visitor.visit_expression(target.clone());
 

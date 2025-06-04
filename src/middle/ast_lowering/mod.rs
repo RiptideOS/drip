@@ -117,6 +117,7 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
 
     fn lower_type(&mut self, ty: &'ast ast::Type) -> Rc<hir::Type> {
         let kind = match &ty.kind {
+            ast::TypeKind::Unit => hir::TypeKind::Unit,
             ast::TypeKind::QualifiedIdentifier(qualified_identifier) => {
                 // There are 2 possibilities here:
                 //   1) The identifier only has one segment and must be a
@@ -168,6 +169,13 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
 
                 hir::TypeKind::Array { ty, length }
             }
+            ast::TypeKind::Tuple(types) => {
+                if let [single] = types.as_ref() {
+                    return self.lower_type(single);
+                } else {
+                    hir::TypeKind::Tuple(types.iter().map(|ty| self.lower_type(ty)).collect())
+                }
+            }
             ast::TypeKind::Any => hir::TypeKind::Any,
         };
 
@@ -189,7 +197,7 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
                     .get(node_id)
                     .expect("node id for local (let) binding was not found"),
             ),
-            hir::Resolution::IntrinsicFunction => hir::Resolution::IntrinsicFunction,
+            hir::Resolution::IntrinsicFunction(name) => hir::Resolution::IntrinsicFunction(*name),
             hir::Resolution::Primitive(primitive_kind) => {
                 hir::Resolution::Primitive(*primitive_kind)
             }
@@ -332,6 +340,12 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
                 })
             }
             ast::ExpressionKind::Grouping(expression) => return self.lower_expression(expression),
+            ast::ExpressionKind::Tuple(expressions) => hir::ExpressionKind::Tuple(
+                expressions
+                    .iter()
+                    .map(|e| self.lower_expression(e))
+                    .collect(),
+            ),
             ast::ExpressionKind::Block(block) => {
                 hir::ExpressionKind::Block(self.lower_block(block))
             }

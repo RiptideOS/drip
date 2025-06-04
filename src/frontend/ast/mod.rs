@@ -67,10 +67,12 @@ pub struct Type {
 
 #[derive(Debug)]
 pub enum TypeKind {
+    Unit,
     QualifiedIdentifier(QualifiedIdentifier),
     Pointer(Box<Type>),
     Slice(Box<Type>),
     Array { ty: Box<Type>, length: Box<Literal> },
+    Tuple(Box<[Type]>),
     Any,
 }
 
@@ -150,6 +152,7 @@ pub enum ExpressionKind {
     Literal(Box<Literal>),
     QualifiedIdentifier(Box<QualifiedIdentifier>),
     Grouping(Box<Expression>),
+    Tuple(Box<[Expression]>),
     Block(Box<Block>),
     FunctionCall {
         target: Box<Expression>,

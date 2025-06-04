@@ -230,7 +230,7 @@ impl<'res, 'ast> LateResolveVisitor<'res, 'ast> {
         }
 
         if namespace == Namespace::Value && self.resolver.builtin_functions.contains(&name) {
-            return Some(hir::Resolution::IntrinsicFunction);
+            return Some(hir::Resolution::IntrinsicFunction(name));
         }
 
         let (scope_stack, global_scope) = match namespace {

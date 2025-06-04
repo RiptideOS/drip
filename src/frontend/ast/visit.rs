@@ -118,7 +118,12 @@ pub fn walk_type<'a>(visitor: &mut impl Visitor<'a>, ty: &'a Type) {
         TypeKind::Pointer(ty) => visitor.visit_type(ty),
         TypeKind::Slice(ty) => visitor.visit_type(ty),
         TypeKind::Array { ty, .. } => visitor.visit_type(ty),
-        TypeKind::Any => {}
+        TypeKind::Tuple(tys) => {
+            for ty in tys.iter() {
+                visitor.visit_type(ty);
+            }
+        }
+        TypeKind::Unit | TypeKind::Any => {}
     }
 }
 
@@ -166,6 +171,9 @@ pub fn walk_expression<'a>(visitor: &mut impl Visitor<'a>, expression: &'a Expre
             visitor.visit_qualified_identifier(qualified_identifier)
         }
         ExpressionKind::Grouping(expression) => visitor.visit_expression(expression),
+        ExpressionKind::Tuple(expressions) => {
+            expressions.iter().for_each(|e| visitor.visit_expression(e))
+        }
         ExpressionKind::Block(block) => visitor.visit_block(block),
         ExpressionKind::FunctionCall { target, arguments } => {
             visitor.visit_expression(target);
