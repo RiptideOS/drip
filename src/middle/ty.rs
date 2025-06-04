@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
 use colored::Colorize;
+use hashbrown::HashSet;
 
 use crate::{
     index::{Index, simple_index},
@@ -172,6 +173,43 @@ impl TypeKind {
 
     pub fn is_error(&self) -> bool {
         matches!(self, TypeKind::Error)
+    }
+
+    /// Collects the list of free type variables in this type, traversing
+    /// recursive inner types if necessary
+    pub fn free_type_variables(&self) -> HashSet<TypeVariable> {
+        match self {
+            TypeKind::Never
+            | TypeKind::Unit
+            | TypeKind::Bool
+            | TypeKind::Char
+            | TypeKind::Integer(_)
+            | TypeKind::UnsignedInteger(_)
+            | TypeKind::Float(_)
+            | TypeKind::Str
+            | TypeKind::CStr
+            | TypeKind::Any
+            | TypeKind::Error => HashSet::new(),
+            TypeKind::Pointer(inner)
+            | TypeKind::Slice(inner)
+            | TypeKind::Array { ty: inner, .. } => inner.free_type_variables(),
+            TypeKind::FunctionPointer {
+                parameters,
+                return_type,
+                ..
+            } => {
+                let mut res = HashSet::new();
+
+                for param in parameters.iter() {
+                    res.extend(param.free_type_variables());
+                }
+
+                res.extend(return_type.free_type_variables());
+
+                res
+            }
+            TypeKind::Infer(type_variable) => HashSet::from([*type_variable]),
+        }
     }
 }
 

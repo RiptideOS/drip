@@ -56,7 +56,7 @@ pub trait Visitor: Sized {
         panic!("must be overridden if used to allow resolving body ids")
     }
 
-    fn visit_block(&mut self, block: Rc<Block>) {
+    fn visit_block(&mut self, block: Rc<Block>, _context: BlockContext) {
         walk_block(self, block)
     }
 
@@ -73,6 +73,16 @@ pub trait Visitor: Sized {
     }
 
     fn visit_literal(&mut self, _literal: &Literal) {}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BlockContext {
+    /// Function body
+    Body,
+    /// New scope within another block (include if-else blocks)
+    Scope,
+    /// The block of a while or for expression
+    Loop
 }
 
 pub fn walk_module(visitor: &mut impl Visitor, module: &Module) {
@@ -162,7 +172,7 @@ pub fn walk_body(visitor: &mut impl Visitor, body: Rc<Body>) {
         visitor.visit_function_parameter(param.clone());
     }
 
-    visitor.visit_block(body.block.clone());
+    visitor.visit_block(body.block.clone(), BlockContext::Body);
 }
 
 pub fn walk_block(visitor: &mut impl Visitor, block: Rc<Block>) {
@@ -199,7 +209,7 @@ pub fn walk_expression(visitor: &mut impl Visitor, expression: Rc<Expression>) {
     match &expression.kind {
         ExpressionKind::Literal(literal) => visitor.visit_literal(literal),
         ExpressionKind::Path(path) => visitor.visit_path(path),
-        ExpressionKind::Block(block) => visitor.visit_block(block.clone()),
+        ExpressionKind::Block(block) => visitor.visit_block(block.clone(), BlockContext::Scope),
         ExpressionKind::FunctionCall { target, arguments } => {
             visitor.visit_expression(target.clone());
 
@@ -222,7 +232,7 @@ pub fn walk_expression(visitor: &mut impl Visitor, expression: Rc<Expression>) {
             negative,
         } => {
             visitor.visit_expression(condition.clone());
-            visitor.visit_block(positive.clone());
+            visitor.visit_block(positive.clone(), BlockContext::Scope);
 
             if let Some(n) = &negative {
                 visitor.visit_expression(n.clone());
@@ -230,7 +240,7 @@ pub fn walk_expression(visitor: &mut impl Visitor, expression: Rc<Expression>) {
         }
         ExpressionKind::While { condition, block } => {
             visitor.visit_expression(condition.clone());
-            visitor.visit_block(block.clone());
+            visitor.visit_block(block.clone(), BlockContext::Loop);
         }
         ExpressionKind::Assignment { lhs, rhs } => {
             visitor.visit_expression(lhs.clone());

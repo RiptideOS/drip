@@ -146,7 +146,7 @@ impl hir::visit::Visitor for HirIndexer {
         });
     }
 
-    fn visit_block(&mut self, block: Rc<hir::Block>) {
+    fn visit_block(&mut self, block: Rc<hir::Block>, _context: hir::visit::BlockContext) {
         self.insert(block.hir_id, hir::Node::Block(block.clone()));
         self.with_parent(block.hir_id, |this| {
             hir::visit::walk_block(this, block);

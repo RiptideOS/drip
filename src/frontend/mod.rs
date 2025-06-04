@@ -19,10 +19,18 @@ pub struct SourceFile {
 
 impl SourceFile {
     pub fn value_of_span(&self, span: Span) -> &str {
+        if span == Span::INVALID {
+            unreachable!("tried to get value invalid span");
+        }
+
         &self.contents[span.start..span.end]
     }
 
     pub fn format_span_position(&self, span: Span) -> String {
+        if span == Span::INVALID {
+            unreachable!("tried to format invalid span");
+        }
+
         format!(
             "{}:{}:{}",
             self.origin,
@@ -58,6 +66,10 @@ impl SourceFile {
     }
 
     pub fn highlight_span(&self, span: Span) {
+        if span == Span::INVALID {
+            unreachable!("tried to highlight invalid span");
+        }
+
         let lines: Vec<_> = self.contents.lines().collect();
 
         let span_starting_row = self.row_for_position(span.start);
@@ -99,7 +111,12 @@ impl SourceFile {
                         if lexer.peek().is_some_and(|t| t.kind == TokenKind::OpenParen) {
                             Color::Blue
                         } else if last_token_kind.is_some_and(|kind| {
-                            matches!(kind, TokenKind::Colon | TokenKind::Keyword(Keyword::As))
+                            matches!(
+                                kind,
+                                TokenKind::Colon
+                                    | TokenKind::Arrow
+                                    | TokenKind::Keyword(Keyword::As)
+                            )
                         }) {
                             // TODO: for more accurate output, we could cache
                             // the results of parsing to see what identifier

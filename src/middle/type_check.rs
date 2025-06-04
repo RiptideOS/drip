@@ -21,7 +21,7 @@
 //! report any errors since the input source code has been fully validated. From
 //! there, the next step is to use the computed types to lower the HIR to LIR.
 
-use std::{collections::BTreeMap, rc::Rc};
+use std::{cell::OnceCell, collections::BTreeMap, rc::Rc};
 
 use colored::Colorize;
 use hashbrown::{HashMap, HashSet};
@@ -37,7 +37,10 @@ use crate::{
         lexer::Span,
     },
     index::Index,
-    middle::ty::{FloatVariableId, IntVariableId, Type, TypeKind, TypeVariable},
+    middle::{
+        primitive::{FloatKind, IntKind},
+        ty::{FloatVariableId, IntVariableId, Type, TypeKind, TypeVariable},
+    },
 };
 
 #[derive(Debug)]
@@ -93,16 +96,7 @@ impl<'hir> TypeContext<'hir> {
 
     fn compute_hir_type(&mut self, ty: Rc<hir::Type>) -> Type {
         match &ty.kind {
-            hir::TypeKind::Path(path) => match path.resolution() {
-                hir::Resolution::Definition(_definition_kind, local_def_id) => {
-                    let _owner = &self.module.owners[*local_def_id];
-                    todo!("compute user defined types")
-                }
-                hir::Resolution::Primitive(primitive_kind) => {
-                    self.get_primitive_type(*primitive_kind)
-                }
-                _ => unreachable!("encountered value resolution in type namespace"),
-            },
+            hir::TypeKind::Path(path) => self.compute_hir_resolution_type(*path.resolution()),
             hir::TypeKind::Pointer(ty) => {
                 let inner = self.compute_hir_type(ty.clone());
                 self.intern_type(TypeKind::Pointer(inner))
@@ -143,6 +137,17 @@ impl<'hir> TypeContext<'hir> {
         }
     }
 
+    fn compute_hir_resolution_type(&mut self, resolution: hir::Resolution) -> Type {
+        match resolution {
+            hir::Resolution::Definition(_definition_kind, local_def_id) => {
+                let _owner = &self.module.owners[local_def_id];
+                todo!("compute user defined types")
+            }
+            hir::Resolution::Primitive(primitive_kind) => self.get_primitive_type(primitive_kind),
+            r => unreachable!("encountered value resolution in type namespace: {r:?}"),
+        }
+    }
+
     fn report_error(&self, error: TypeError) {
         let message = match error.kind {
             TypeErrorKind::TypeMismatch { expected, actual } => match error.origin.kind {
@@ -165,7 +170,9 @@ impl<'hir> TypeContext<'hir> {
                         "expected positive type of if condition {expected} to match negative type {actual}"
                     )
                 }
-                TypeBoundary::WhileCondition => todo!(),
+                TypeBoundary::WhileCondition => {
+                    format!("expected while condition type to be {expected} but found {actual}")
+                }
                 TypeBoundary::BareExpression => {
                     format!("expected bare expression type to be {expected} but found {actual}")
                 }
@@ -175,11 +182,19 @@ impl<'hir> TypeContext<'hir> {
                 TypeBoundary::Assignment => {
                     format!("cannot assign {actual} to variable with type {expected}")
                 }
-                TypeBoundary::OpAssignment => todo!(),
+                TypeBoundary::OpAssignment => format!(
+                    "cannot use {actual} in operator assignment to variable with type {expected}"
+                ),
+                TypeBoundary::ExplicitReturn => format!(
+                    "explicit type {actual} does not match the function signature's type {expected}"
+                ),
+                   TypeBoundary::ImplicitReturn => format!(
+                    "implicit type {actual} does not match the function signature's type {expected}"
+                ),
                 TypeBoundary::FunctionCall
                 | TypeBoundary::Deref
                 | TypeBoundary::LogicalOp
-                | TypeBoundary::ArithmeticOp => {
+                | TypeBoundary::ArithmeticOp | TypeBoundary::LoopControlFlow  => {
                     unreachable!("these are not used with type mismatch")
                 }
             },
@@ -207,8 +222,19 @@ impl<'hir> TypeContext<'hir> {
                 format!("type {ty} is infinitely recursive (variable = {variable:?})")
             }
             TypeErrorKind::ArgumentLengthMismatch { expected, actual } => {
-                format!("expected {expected} argument(s) to this function but found {actual}",)
+                format!("expected {expected} argument(s) to this function but found {actual}")
             }
+            TypeErrorKind::CannotInfer => match error.origin.kind {
+                TypeBoundary::LetStatement => "cannot infer the type of this binding without an explicit type or initializer expression".to_string(),
+                _ => unreachable!()
+            },
+            TypeErrorKind::IllegalLoopControlFlow(LoopControlFlowKind::Break) => "`break` statement can only be used within loops".to_string(),
+            TypeErrorKind::IllegalLoopControlFlow(LoopControlFlowKind::Continue) => "`continue` statement can only be used within loops".to_string(),
+            TypeErrorKind::MissingReturnValue { expected } => match error.origin.kind {
+                TypeBoundary::ExplicitReturn =>  format!("explicit return type does not match the expected type {expected}"),
+                TypeBoundary::ImplicitReturn =>  format!("expected function to return type {expected} but no implicit or explicit returns found"),
+                _ => unreachable!()
+            },
         };
 
         eprintln!(
@@ -282,6 +308,10 @@ struct TypeChecker<'tcx, 'hir> {
     /// Errors we've collected while type checking
     errors: Vec<TypeError>,
 
+    /// Keeps track of whether we are in a loop context (for break and continue)
+    within_loop: bool,
+    return_type: OnceCell<Type>,
+
     next_integer_variable_id: IntVariableId,
     next_float_variable_id: FloatVariableId,
 }
@@ -335,6 +365,12 @@ enum TypeBoundary {
     Assignment,
     /// Sides of op assignment must have the same type
     OpAssignment,
+    /// Break or continue statement
+    LoopControlFlow,
+    /// Return value type must match body return type
+    ExplicitReturn,
+    /// Implicit return type must match function signature type
+    ImplicitReturn,
 }
 
 impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
@@ -415,7 +451,7 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
         }
     }
 
-    fn unify_constraints(&mut self) -> Result<SubstitutionMap, Vec<TypeError>> {
+    fn unify_constraints(&mut self) -> (SubstitutionMap, Vec<TypeError>) {
         let mut substitution_map = SubstitutionMap::new();
         let mut errors = vec![];
 
@@ -431,11 +467,7 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
             }
         }
 
-        if errors.is_empty() {
-            Ok(substitution_map)
-        } else {
-            Err(errors)
-        }
+        (substitution_map, errors)
     }
 
     /// Attempts to equate the provided types using our type system's inference
@@ -479,14 +511,7 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
                     });
                 }
 
-                match variable {
-                    TypeVariable::Int(id) => {
-                        substitution_map.int_map.insert(*id, ty);
-                    }
-                    TypeVariable::Float(id) => {
-                        substitution_map.float_map.insert(*id, ty);
-                    }
-                }
+                substitution_map.insert(*variable, ty);
 
                 Ok(())
             }
@@ -585,17 +610,22 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
     /// was able to do so successfully
     pub fn into_output(mut self) -> Result<TypeCheckResults, Vec<TypeError>> {
         // Solve the collected constraints
-        let substitution_map = match self.unify_constraints() {
-            Ok(s) => s,
-            Err(mut errors) => {
-                self.errors.append(&mut errors);
-                return Err(self.errors);
-            }
-        };
+        let (substitution_map, mut errors) = self.unify_constraints();
+         self.errors.append(&mut errors);
 
-        // If we unified successfully but had other problems, stop here
+        // If we unified successfully but had other problems before, stop here
         if !self.errors.is_empty() {
-            return Err(self.errors);
+            let mut errors = core::mem::take(&mut self.errors);
+
+            // Apply substitutions on types in the collected errors to generate
+            // more useful output
+            for err in &mut errors {
+                for ty in err.kind.get_substitutable_types_mut() {
+                    *ty = self.apply_substitution(&substitution_map, ty.clone());
+                }
+            }
+
+            return Err(errors);
         }
 
         // FIXME: we could optimize this by first only applying substitutions to
@@ -610,20 +640,75 @@ impl<'tcx, 'hir> TypeChecker<'tcx, 'hir> {
             *ty = self.apply_substitution(&substitution_map, ty.clone());
         }
 
-        // TODO: assert that no more type variables exist in the resulting
-        // type, or apply default substitutions like i32 for integers and
-        // f32 for floats. we could do this by collecting the remaining free
-        // type variables and creating a new substitution map with default
-        // substitutions and then applying that again to all the types or only
-        // the types we know are still unconstrained
+        // Apply default substitutions to any remaining free type variables
+        let mut default_substitutions = SubstitutionMap::new();
+        let mut unconstrained_nodes = HashSet::new();
+
+        for (id, ty) in &mut node_types {
+            let free_type_variables = ty.free_type_variables();
+
+            if free_type_variables.is_empty() {
+                continue;
+            }
+
+            for ftv in free_type_variables {
+                let default_ty = match ftv {
+                    TypeVariable::Int(_) => self
+                        .type_context
+                        .get_primitive_type(PrimitiveKind::Int(IntKind::I32)),
+                    TypeVariable::Float(_) => self
+                        .type_context
+                        .get_primitive_type(PrimitiveKind::Float(FloatKind::F32)),
+                };
+
+                default_substitutions.insert(ftv, default_ty);
+            }
+
+            unconstrained_nodes.insert(*id);
+        }
+
+        for (id, ty) in &mut node_types {
+            // Simple optimization to not check nodes which we know dont have
+            // any unconstrained types
+            if !unconstrained_nodes.contains(id) {
+                continue;
+            }
+
+            *ty = self.apply_substitution(&default_substitutions, ty.clone());
+        }
+
+        self.node_to_type_map = node_types;
+
+        for (id, node) in self
+            .type_context
+            .module
+            .get_owner(self.owner_id)
+            .nodes
+            .enumerate()
+        {
+            // Skip the owner node
+            if id == hir::ItemLocalId::ZERO {
+                continue;
+            }
+
+            assert!(
+                self.node_to_type_map.contains_key(&id),
+                "missing type for node {id:?} = {node:?}"
+            );
+            assert!(
+                self.get_type(id).free_type_variables().is_empty(),
+                "node {id:?} has remaining free type variables in its type"
+            );
+        }
 
         Ok(TypeCheckResults {
             owner_id: self.owner_id,
-            node_types,
+            node_types: self.node_to_type_map,
         })
     }
 }
 
+#[derive(Debug)]
 struct SubstitutionMap {
     int_map: HashMap<IntVariableId, Type>,
     float_map: HashMap<FloatVariableId, Type>,
@@ -634,6 +719,17 @@ impl SubstitutionMap {
         Self {
             int_map: HashMap::new(),
             float_map: HashMap::new(),
+        }
+    }
+
+    fn insert(&mut self, variable: TypeVariable, ty: Type) {
+        match variable {
+            TypeVariable::Int(id) => {
+                self.int_map.insert(id, ty);
+            }
+            TypeVariable::Float(id) => {
+                self.float_map.insert(id, ty);
+            }
         }
     }
 }
@@ -675,6 +771,29 @@ enum TypeErrorKind {
         expected: usize,
         actual: usize,
     },
+    /// Local binding declared with no explicit type and no initializer
+    CannotInfer,
+    /// Tried to use break or continue outside loop context
+    IllegalLoopControlFlow(LoopControlFlowKind),
+    /// If function's return type is not `()`, return expressions must contain a
+    /// value
+    MissingReturnValue {
+        expected: Type,
+    },
+}
+
+impl TypeErrorKind {
+    pub fn get_substitutable_types_mut(&mut self) -> Vec<&mut Type> {
+        match self {
+            TypeErrorKind::TypeMismatch { expected, actual } => vec![expected, actual],
+            TypeErrorKind::InvalidOperation { provided, .. } => vec![provided],
+            TypeErrorKind::MissingReturnValue { expected } => vec![expected],
+            TypeErrorKind::InfinitelyRecursiveType { .. }
+            | TypeErrorKind::ArgumentLengthMismatch { .. }
+            | TypeErrorKind::CannotInfer
+            | TypeErrorKind::IllegalLoopControlFlow(_) => vec![],
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -685,28 +804,125 @@ enum TypeUsage {
     Deref,
 }
 
+#[derive(Debug)]
+enum LoopControlFlowKind {
+    Continue,
+    Break,
+}
+
 impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
     /// Bind the types for function parameters
     fn visit_function_definition(
         &mut self,
-        _name: &hir::Identifier,
+        name: &hir::Identifier,
         signature: &hir::FunctionSignature,
         body: hir::BodyId,
     ) {
+        // Collect parameter types
         hir::visit::walk_function_signature(self, signature);
 
+        // Default return type is unit if none specified
+        let return_ty = if let Some(r) = &signature.return_type {
+            self.get_type(r.hir_id)
+        } else {
+            self.type_context.get_unit_type()
+        };
+        self.return_type.set(return_ty.clone()).unwrap();
+
+        // Assign types to function paramters
         let body = self.type_context.module.get_body(body);
         for (name, ty) in body.params.iter().zip(signature.parameters.iter()) {
             self.copy_type_from(name.hir_id, ty.hir_id);
         }
 
-        hir::visit::walk_body(self, body);
+        // Type check the function body
+        hir::visit::walk_body(self, body.clone());
+
+        // Validate that either the implicit return type matches the expected
+        // type or that there are no code paths laeading to the end of the
+        // function
+        if let Some(last_expr) = &body.block.expression {
+            // The body's implicit return type needs to match the function's signature
+
+            let last_expr_ty = self.get_type(last_expr.hir_id);
+            self.create_type_constraint(
+                return_ty,
+                last_expr_ty,
+                TypeConstraintOrigin {
+                    span: if let Some(e) = &body.block.expression {
+                        e.span
+                    } else if let Some(r) = &signature.return_type {
+                        r.span
+                    } else {
+                        // NOTE: this should never actually happen because this
+                        // constraint would never be violated with both
+                        // (both default to unit in that case and the constraint is
+                        // upheld), but we need to provide a span here so just use
+                        // the name bc thats fine
+                        Span::INVALID
+                    },
+                    kind: TypeBoundary::ImplicitReturn,
+                },
+            );
+        } else if let Some(ret) = &signature.return_type {
+            // If there is no implicit return and a diverging path inside the
+            // function, we can never reach the end of the body and don't need
+            // to generate an error
+
+            let has_explicit_return = body.block.statements.iter().any(|stmt| {
+                // Any statement that propogates a never type up from any of its
+                // subexpressions must have a return somewhere within it
+                match &stmt.kind {
+                    hir::StatementKind::Let(let_statement) => {
+                        if let Some(initializer) = &let_statement.initializer
+                            && self.get_type(initializer.hir_id).is_never()
+                        {
+                            return true;
+                        }
+                    }
+                    hir::StatementKind::BareExpression(expression)
+                    | hir::StatementKind::SemiExpression(expression) => {
+                        if self.get_type(expression.hir_id).is_never() {
+                            return true;
+                        }
+                    }
+                }
+
+                false
+            });
+
+            if !has_explicit_return {
+                self.errors.push(TypeError {
+                    origin: TypeConstraintOrigin {
+                        span: ret.span,
+                        kind: TypeBoundary::ImplicitReturn,
+                    },
+                    kind: TypeErrorKind::MissingReturnValue {
+                        expected: return_ty,
+                    },
+                });
+            }
+        }
     }
 
     /// Precompute types in function parameters and local bindings
     fn visit_type(&mut self, ty: Rc<hir::Type>) {
+        hir::visit::walk_type(self, ty.clone());
+
         let computed_ty = self.type_context.compute_hir_type(ty.clone());
         self.insert_type(ty.hir_id, computed_ty);
+    }
+
+    fn visit_path_segment(&mut self, segment: Rc<hir::PathSegment>) {
+        if let hir::Resolution::Local(local_id) = &segment.resolution {
+            self.copy_type_from(segment.hir_id, *local_id);
+            return;
+        }
+
+        let computed_ty = self
+            .type_context
+            .compute_hir_resolution_type(segment.resolution);
+        self.insert_type(segment.hir_id, computed_ty);
     }
 
     fn visit_let_statement(&mut self, let_stmt: Rc<hir::LetStatement>) {
@@ -730,7 +946,18 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
         // Assign the type of the let based on the combination of explicit type
         // and initializer type using the rules we defined above
         match (explicit_type, initializer_type) {
-            (None, None) => todo!("report this as an error"),
+            (None, None) => {
+                self.errors.push(TypeError {
+                    origin: TypeConstraintOrigin {
+                        span: let_stmt.span,
+                        kind: TypeBoundary::LetStatement,
+                    },
+                    kind: TypeErrorKind::CannotInfer,
+                });
+
+                let error_ty = self.type_context.get_error_type();
+                self.insert_type(let_stmt.hir_id, error_ty);
+            }
             (None, Some(initializer)) => {
                 self.node_to_type_map
                     .insert(let_stmt.hir_id.local_id, initializer);
@@ -851,10 +1078,6 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                             kind: TypeBoundary::FunctionArgument,
                         },
                     );
-
-                    // TODO: respect permitence of variadic arguments, but
-                    // require them to be concrete types if present (cant infer
-                    // variadics)
                 }
             }
             hir::ExpressionKind::Binary { lhs, operator, rhs } => {
@@ -1154,7 +1377,6 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                     lhs_ty,
                     rhs_ty,
                     TypeConstraintOrigin {
-                        // TODO: use the span of the last expr in the block chain (lol)
                         span: expression.span,
                         kind: TypeBoundary::Assignment,
                     },
@@ -1268,14 +1490,53 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                 );
                 self.insert_type(expression.hir_id, unit_ty);
             }
-            hir::ExpressionKind::Break | hir::ExpressionKind::Continue => {
-                // TODO: check that we are in a loop context
+            kind @ (hir::ExpressionKind::Break | hir::ExpressionKind::Continue) => {
+                let kind = if matches!(kind, hir::ExpressionKind::Break) {
+                    LoopControlFlowKind::Break
+                } else {
+                    LoopControlFlowKind::Continue
+                };
+
+                if !self.within_loop {
+                    self.errors.push(TypeError {
+                        origin: TypeConstraintOrigin {
+                            span: expression.span,
+                            kind: TypeBoundary::LoopControlFlow,
+                        },
+                        kind: TypeErrorKind::IllegalLoopControlFlow(kind),
+                    });
+                }
 
                 let ty = self.type_context.get_primitive_type(PrimitiveKind::Never);
                 self.insert_type(expression.hir_id, ty);
             }
-            hir::ExpressionKind::Return(_) => {
-                // TODO: check that return type matches current body return type
+            hir::ExpressionKind::Return(value) => {
+                let return_ty = self.return_type.get().unwrap().clone();
+
+                if let Some(v) = value {
+                    let value_ty = self.get_type(v.hir_id);
+
+                    if value_ty != return_ty {
+                        self.create_type_constraint(
+                            value_ty,
+                            return_ty,
+                            TypeConstraintOrigin {
+                                span: expression.span,
+                                kind: TypeBoundary::ExplicitReturn,
+                            },
+                        );
+                    }
+                } else if !return_ty.is_unit() {
+                    self.errors.push(TypeError {
+                        origin: TypeConstraintOrigin {
+                            span: expression.span,
+                            kind: TypeBoundary::ExplicitReturn,
+                        },
+                        kind: TypeErrorKind::MissingReturnValue {
+                            expected: return_ty,
+                        },
+                    });
+                }
 
                 let ty = self.type_context.get_primitive_type(PrimitiveKind::Never);
                 self.insert_type(expression.hir_id, ty);
@@ -1283,8 +1544,16 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
         }
     }
 
-    fn visit_block(&mut self, block: Rc<hir::Block>) {
-        hir::visit::walk_block(self, block.clone());
+    fn visit_block(&mut self, block: Rc<hir::Block>, context: hir::visit::BlockContext) {
+        // Add to loop context if necessary
+        {
+            let previous = self.within_loop;
+            self.within_loop = self.within_loop || context == hir::visit::BlockContext::Loop;
+
+            hir::visit::walk_block(self, block.clone());
+
+            self.within_loop = previous;
+        }
 
         for stmt in block.statements.iter() {
             let hir::StatementKind::BareExpression(e) = &stmt.kind else {
@@ -1326,7 +1595,6 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
 }
 
 #[derive(Debug)]
-
 pub struct ModuleTypeCheckResults {
     item_results: BTreeMap<hir::LocalDefId, TypeCheckResults>,
 }
@@ -1360,6 +1628,8 @@ pub fn type_check_module(module: &hir::Module, source_file: &SourceFile) -> Modu
             node_to_type_map: BTreeMap::new(),
             constraints: Vec::new(),
             errors: Vec::new(),
+            within_loop: false,
+            return_type: OnceCell::new(),
             next_integer_variable_id: IntVariableId::new(0),
             next_float_variable_id: FloatVariableId::new(0),
         };

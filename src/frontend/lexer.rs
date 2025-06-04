@@ -192,13 +192,18 @@ static SINGLE_TOKENS: Lazy<BTreeMap<char, TokenKind>> = Lazy::new(|| {
     ])
 });
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
 }
 
 impl Span {
+    pub const INVALID: Self = Self {
+        start: usize::MAX,
+        end: usize::MAX,
+    };
+
     pub fn new(start: usize, end: usize) -> Self {
         Self { start, end }
     }
