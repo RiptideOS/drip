@@ -208,10 +208,10 @@ impl<'hir> TypeContext<'hir> {
                     "cannot use {actual} in operator assignment to variable with type {expected}"
                 ),
                 TypeBoundary::ExplicitReturn => format!(
-                    "explicit type {actual} does not match the function signature's type {expected}"
+                    "explicit return type {actual} does not match the function signature's return type {expected}"
                 ),
                    TypeBoundary::ImplicitReturn => format!(
-                    "implicit type {actual} does not match the function signature's type {expected}"
+                    "implicit return type {actual} does not match the function signature's return type {expected}"
                 ),
                 TypeBoundary::FunctionCall
                 | TypeBoundary::Deref

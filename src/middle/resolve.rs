@@ -259,9 +259,14 @@ impl<'res, 'ast> LateResolveVisitor<'res, 'ast> {
 
     fn report_unresolved(&self, offending_span: Span) -> ! {
         eprintln!(
-            "Unresolved name for identifier `{}` ({})",
+            "{}: unresolved name for identifier `{}` {}",
+            "error".red(),
             self.module.source_file.value_of_span(offending_span),
-            self.module.source_file.format_span_position(offending_span)
+            format!(
+                "(at {})",
+                self.module.source_file.format_span_position(offending_span)
+            )
+            .white()
         );
         self.module.source_file.highlight_span(offending_span);
         // TODO: recover from this error and keep moving
