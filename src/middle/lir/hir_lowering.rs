@@ -1,15 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use crate::{
-    backend::lir::{self, BlockId, Instruction},
+    frontend::intern::InternedSymbol,
     index::{Index, IndexVec},
-    middle::{hir, ty, type_check::ModuleTypeCheckResults},
+    middle::{hir, lir, ty, type_check::ModuleTypeCheckResults},
 };
 
-struct LirLowereringContext<'hir> {
+struct BodyLowereringContext<'hir> {
     module: &'hir hir::Module,
     type_map: &'hir ModuleTypeCheckResults,
     owner_id: hir::LocalDefId,
+    symbol_name: InternedSymbol,
 
     register_map: IndexVec<lir::RegisterId, lir::Register>,
     local_to_register_map: BTreeMap<hir::ItemLocalId, lir::RegisterId>,
@@ -20,7 +21,7 @@ struct LirLowereringContext<'hir> {
     block_stack: VecDeque<lir::BlockId>,
 }
 
-impl<'hir> LirLowereringContext<'hir> {
+impl<'hir> BodyLowereringContext<'hir> {
     fn create_register(&mut self, ty: ty::Type) -> lir::RegisterId {
         let id = self.register_map.next_index();
         self.register_map.push(lir::Register { id, ty })
@@ -43,16 +44,8 @@ impl<'hir> LirLowereringContext<'hir> {
     }
 
     fn into_output(self) -> lir::FunctionDefinition {
-        let hir::ItemKind::Function { name, .. } = &self
-            .module
-            .get_owner(self.owner_id)
-            .node()
-            .as_item()
-            .unwrap()
-            .kind;
-
         lir::FunctionDefinition {
-            symbol_name: name.symbol,
+            symbol_name: self.symbol_name,
             registers: self.register_map.into_entries().collect(),
             arguments: self.arguments,
             blocks: self.block_map.into_entries().collect(),
@@ -60,7 +53,7 @@ impl<'hir> LirLowereringContext<'hir> {
     }
 }
 
-impl<'hir> hir::visit::Visitor for LirLowereringContext<'hir> {
+impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
     fn visit_function_definition(
         &mut self,
         _name: &hir::Identifier,
@@ -82,9 +75,15 @@ impl<'hir> hir::visit::Visitor for LirLowereringContext<'hir> {
         hir::visit::walk_body(self, body);
 
         let current_block = lir::BlockId::new(self.block_map.len() - 1);
+
+        // Main implicitly returns 0 even if the signature does not
+        // say so
+        let value = (self.symbol_name.value() == "main")
+            .then_some(lir::Operand::Immediate(lir::Immediate::Int(0)));
+
         self.block_map[current_block]
             .instructions
-            .push(lir::Instruction::Return { value: None });
+            .push(lir::Instruction::Return { value });
     }
 
     fn visit_let_statement(&mut self, let_stmt: std::rc::Rc<hir::LetStatement>) {
@@ -125,7 +124,7 @@ impl<'hir> hir::visit::Visitor for LirLowereringContext<'hir> {
                 let ty = self.type_map.get_type(expression.hir_id);
                 let reg = self.create_register(ty);
 
-                self.push_instruction(Instruction::Move {
+                self.push_instruction(lir::Instruction::Move {
                     destination: reg,
                     source: lir::Operand::Immediate(value),
                 });
@@ -159,7 +158,7 @@ impl<'hir> hir::visit::Visitor for LirLowereringContext<'hir> {
                 let lhs = self.expression_to_register_map[&lhs.hir_id.local_id];
                 let rhs = self.expression_to_register_map[&rhs.hir_id.local_id];
 
-                self.push_instruction(Instruction::BinaryOperation {
+                self.push_instruction(lir::Instruction::BinaryOperation {
                     operator: *operator,
                     destination: reg,
                     lhs: lir::Operand::Register(lhs),
@@ -209,7 +208,7 @@ impl<'hir> hir::visit::Visitor for LirLowereringContext<'hir> {
                     .predecessors
                     .insert(current_block_id);
 
-                let positive_branch_last_block: BlockId;
+                let positive_branch_last_block: lir::BlockId;
                 {
                     self.block_stack.push_back(positive_block_id);
                     self.visit_block(positive.clone(), hir::visit::BlockContext::Scope);
@@ -298,7 +297,7 @@ impl<'hir> hir::visit::Visitor for LirLowereringContext<'hir> {
 
                 self.block_map[current_block_id]
                     .instructions
-                    .push(Instruction::Branch {
+                    .push(lir::Instruction::Branch {
                         condition: lir::Operand::Register(condition),
                         positive: positive_block_id,
                         negative: negative_block_id,
@@ -330,6 +329,18 @@ impl<'hir> hir::visit::Visitor for LirLowereringContext<'hir> {
                     .map(|e| self.expression_to_register_map[&e.hir_id.local_id])
                     .map(lir::Operand::Register);
 
+                dbg!(self.symbol_name.value(), value);
+
+                // Main implicitly returns 0 even if the signature does not
+                // say so
+                let value = if self.symbol_name.value() == "main" {
+                    Some(value.unwrap_or(lir::Operand::Immediate(lir::Immediate::Int(0))))
+                } else {
+                    value
+                };
+
+                dbg!(value);
+
                 self.push_instruction(lir::Instruction::Return { value });
             }
         }
@@ -353,9 +364,13 @@ pub fn lower_to_lir(module: &hir::Module, type_map: &ModuleTypeCheckResults) -> 
     let mut function_definitions = BTreeMap::new();
 
     for owner_id in module.get_owners() {
-        let mut ctx = LirLowereringContext {
+        let hir::ItemKind::Function { name, .. } =
+            &module.get_owner(owner_id).node().as_item().unwrap().kind;
+
+        let mut ctx = BodyLowereringContext {
             module,
             owner_id,
+            symbol_name: name.symbol,
             type_map,
             register_map: IndexVec::new(),
             arguments: Vec::new(),

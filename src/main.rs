@@ -1,16 +1,21 @@
 #![feature(decl_macro)]
 
-use std::path::PathBuf;
+use std::{
+    os::unix::ffi::OsStrExt,
+    path::{Path, PathBuf},
+};
 
 use clap::{CommandFactory, Parser as ClapParser, error::ErrorKind};
 
 use crate::{
-    backend::{
-        early_optimizations::perform_early_optimizations, hir_lowering::lower_to_lir,
-        pretty_print::pretty_print_lir,
-    },
+    backend::{CodegenOptions, OutputKind, codegen_module, target::Target},
     frontend::{SourceFile, SourceFileOrigin, parser::Parser},
-    middle::{ast_lowering::lower_to_hir, type_check::type_check_module},
+    middle::{
+        hir::ast_lowering::lower_to_hir,
+        lir::{hir_lowering::lower_to_lir, pretty_print::pretty_print_lir},
+        optimization::pre_ssa::perform_pre_ssa_optimizations,
+        type_check::type_check_module,
+    },
 };
 
 mod backend;
@@ -21,18 +26,18 @@ mod middle;
 #[derive(Debug, ClapParser)]
 #[command(version, about, long_about = None)]
 pub struct Args {
-    #[arg(short = 'e', value_enum, default_value_t = Default::default())]
-    emit: EmitFormat,
+    #[arg(short = 'e', value_enum)]
+    emit: Option<EmitFormat>,
     #[arg(short = 'O', value_enum, default_value_t = Default::default())]
     optimization_level: OptimizationLevel,
+
+    #[arg(short = 'o')]
+    output_path: Option<PathBuf>,
     source_files: Vec<PathBuf>,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum EmitFormat {
-    #[default]
-    #[value(name = "exe")]
-    Executable,
     #[value(name = "obj")]
     Object,
     #[value(name = "asm")]
@@ -107,7 +112,7 @@ fn main() {
         // Construct AST from the source code
         let ast = Parser::parse_module(source_file);
 
-        if args.emit == EmitFormat::Ast {
+        if args.emit == Some(EmitFormat::Ast) {
             println!("{ast:#?}");
             return;
         }
@@ -115,26 +120,96 @@ fn main() {
         // Index AST and resolve names to produce HIR
         let hir = lower_to_hir(&ast);
 
-        if args.emit == EmitFormat::Hir {
+        if args.emit == Some(EmitFormat::Hir) {
             println!("{hir:#?}");
             return;
         }
 
         let types = type_check_module(&hir, source_file);
-        let lir = lower_to_lir(&hir, &types);
+        let mut lir = lower_to_lir(&hir, &types);
 
-        let mut function = lir.function_definitions.into_values().next().unwrap();
+        let function = lir.function_definitions.values_mut().next().unwrap();
         // pretty_print_lir(&function);
         // println!();
 
         if args.optimization_level > OptimizationLevel::Zero {
-            perform_early_optimizations(&mut function);
+            perform_pre_ssa_optimizations(function);
             // pretty_print_lir(&function);
         }
 
-        // if args.emit == EmitFormat::Lir {
-        pretty_print_lir(&function);
-        //     return;
-        // }
+        if args.emit == Some(EmitFormat::Lir) {
+            pretty_print_lir(function);
+            return;
+        }
+
+        // If an emit format is specified, we have to use that. Otherwise we
+        // infer based on the output name
+        let specified_output_kind = args.emit.map(|e| match e {
+            EmitFormat::Assembly => OutputKind::Assembly,
+            EmitFormat::Object => OutputKind::Object,
+            _ => unreachable!(),
+        });
+
+        let cwd = std::env::current_dir().unwrap();
+
+        let (output_directory, output_file) = match &args.output_path {
+            Some(path) if path.is_dir() => (path.to_owned(), None),
+            Some(path) => match path.parent() {
+                Some(parent) => (
+                    parent.to_path_buf(),
+                    Some(PathBuf::from(path.file_name().unwrap())),
+                ),
+                None => (cwd, Some(PathBuf::from(path.file_name().unwrap()))),
+            },
+            None => (std::env::current_dir().unwrap(), None),
+        };
+
+        // If the output name is specified, use that. Otherwise compute the
+        // correct name based on the input file.
+        let (output_kind, output_file) = match output_file {
+            Some(n) => {
+                // if an output path is specified, and no explicit format is
+                // given, infer based on the extension or default to an
+                // executable
+
+                let output_kind = specified_output_kind.unwrap_or_else(|| {
+                    match n.extension().map(|e| e.as_bytes()) {
+                        Some(b"s" | b"S" | b"asm" | b"nasm") => OutputKind::Assembly,
+                        Some(b"o") => OutputKind::Object,
+                        Some(b"a") => OutputKind::StaticLib,
+                        Some(b"so") => OutputKind::SharedLib,
+                        _ => OutputKind::Executable,
+                    }
+                });
+
+                (output_kind, n.clone())
+            }
+            None => {
+                let base_name = Path::new("a");
+                let output_kind = specified_output_kind.unwrap_or(OutputKind::Executable);
+
+                (
+                    output_kind,
+                    match output_kind {
+                        OutputKind::Executable => base_name.with_extension("out"),
+                        OutputKind::Object => base_name.with_extension("o"),
+                        OutputKind::Assembly => base_name.with_extension("S"),
+                        _ => unreachable!(),
+                    },
+                )
+            }
+        };
+
+        codegen_module(
+            &lir,
+            &output_directory.join(output_file),
+            &CodegenOptions {
+                target: Some(Target::x86_64LinuxGnu),
+                output_kind,
+                emit_debug_info: true,
+                verbose: true,
+            },
+        )
+        .expect("codegen failed");
     }
 }

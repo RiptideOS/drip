@@ -247,7 +247,7 @@ impl core::fmt::Display for TypeKind {
                 write!(f, "(")?;
                 for (i, ty) in types.iter().enumerate() {
                     write!(f, "{}", **ty)?;
-                    
+
                     if i != types.len() - 1 {
                         write!(f, ", ")?;
                     }
@@ -280,5 +280,37 @@ impl From<Type> for colored::ColoredString {
 impl Type {
     pub fn colored(&self) -> colored::ColoredString {
         self.clone().into()
+    }
+}
+
+impl TypeKind {
+    /// Returns the size of the type in bytes
+    pub fn size(&self) -> usize {
+        match self {
+            TypeKind::Never => 0,
+            TypeKind::Unit => 0,
+            TypeKind::Bool => 1,
+            TypeKind::Char => 4,
+            TypeKind::Integer(IntKind::I8) => 1,
+            TypeKind::Integer(IntKind::I16) => 2,
+            TypeKind::Integer(IntKind::I32) => 4,
+            TypeKind::Integer(IntKind::I64 | IntKind::ISize) => 8,
+            TypeKind::UnsignedInteger(UIntKind::U8) => 1,
+            TypeKind::UnsignedInteger(UIntKind::U16) => 2,
+            TypeKind::UnsignedInteger(UIntKind::U32) => 4,
+            TypeKind::UnsignedInteger(UIntKind::U64 | UIntKind::USize) => 8,
+            TypeKind::Float(FloatKind::F32) => 4,
+            TypeKind::Float(FloatKind::F64) => 8,
+            TypeKind::Str => 16,
+            TypeKind::CStr => 8,
+            TypeKind::Pointer(_) => 8,
+            TypeKind::Slice(_) => 16,
+            TypeKind::Array { ty, length } => ty.size() * length,
+            TypeKind::Tuple(items) => items.iter().map(|ty| ty.size()).sum(),
+            TypeKind::FunctionPointer { .. } => 8,
+            TypeKind::Any => 0,
+            TypeKind::Infer(_) => unreachable!(),
+            TypeKind::Error => unreachable!(),
+        }
     }
 }

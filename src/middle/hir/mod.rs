@@ -18,6 +18,7 @@ use crate::{
 
 pub mod id;
 pub mod visit;
+pub mod ast_lowering;
 
 pub use id::*;
 

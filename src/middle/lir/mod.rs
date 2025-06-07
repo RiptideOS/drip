@@ -1,3 +1,7 @@
+//! LIR (Low-level Intermediate Representation). In this form, many abstract
+//! concepts like loops and conditionals are simplified to labels and jumps,
+//! expression trees are flattened into ordered post fix operations, etc.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
@@ -8,6 +12,9 @@ use crate::{
     index::simple_index,
     middle::{hir, ty},
 };
+
+pub mod hir_lowering;
+pub mod pretty_print;
 
 #[derive(Debug)]
 pub struct Module {

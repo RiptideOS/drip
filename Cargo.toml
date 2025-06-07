@@ -12,8 +12,11 @@ readme = "README.md"
 clap = { version = "4.5.9", features = ["derive"] }
 colored = "3.0.0"
 hashbrown = "0.15.3"
+indoc = "2.0.6"
 itertools = "0.13.0"
+mktemp = "0.5.1"
 once_cell = "1.19.0"
+strip-ansi-escapes = "0.2.1"
 strum = { version = "0.26.3", features = ["derive"] }
 
 [features]

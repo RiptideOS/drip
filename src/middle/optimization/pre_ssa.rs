@@ -1,12 +1,12 @@
 use hashbrown::{HashMap, HashSet};
 
-use crate::{backend::lir, frontend::ast::BinaryOperatorKind};
+use crate::{frontend::ast::BinaryOperatorKind, middle::lir};
 
-// Performs some early optimizations on the provided function like constant
+// Performs some early LIR optimizations on the provided function like constant
 // propagation, block merging, jump threading, and dead block elimination. This
 // simplifies the LIR before we build the CFG and convert to SSA form and is
 // mostly helpful to eliminate stupid output from lowering.
-pub fn perform_early_optimizations(function: &mut lir::FunctionDefinition) {
+pub fn perform_pre_ssa_optimizations(function: &mut lir::FunctionDefinition) {
     truncate_after_returns(function);
     propagate_constants(function);
     eliminate_dead_blocks(function);
