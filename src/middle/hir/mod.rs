@@ -390,7 +390,10 @@ pub enum TypeKind {
     /// [T]
     Slice(Rc<Type>),
     /// [T; 1024]
-    Array { ty: Rc<Type>, length: usize },
+    Array {
+        ty: Rc<Type>,
+        length: usize,
+    },
     /// (i32, u8, str)
     Tuple(Rc<[Rc<Type>]>),
     /// fn(T1, T2, ... *any) -> T3

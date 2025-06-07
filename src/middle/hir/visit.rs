@@ -1,13 +1,3 @@
-// Item(Rc<Item>),
-// FunctionParameter(Rc<FunctionParameter>),
-// Expression(Rc<Expression>),
-// Block(Rc<Block>),
-// Statement(Rc<Statement>),
-// /// Exists so that we can resolve local variable references to a node ID
-// LetStatement(Rc<LetStatement>),
-// Type(Rc<Type>),
-// PathSegment(Rc<PathSegment>),
-
 use std::rc::Rc;
 
 use super::{

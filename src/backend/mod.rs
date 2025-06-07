@@ -8,4 +8,7 @@
 //! 2. Iterate over block statements, simplifiying control structures and
 //!    expression trees.
 
-// mod lir;
+pub mod early_optimizations;
+pub mod hir_lowering;
+pub mod lir;
+pub mod pretty_print;

@@ -27,7 +27,7 @@ use colored::Colorize;
 use hashbrown::{HashMap, HashSet};
 
 use super::{
-    hir::{self, Module, OwnerNode},
+    hir,
     primitive::{PrimitiveKind, UIntKind},
 };
 use crate::{
@@ -56,7 +56,7 @@ struct TypeContext<'hir> {
 }
 
 impl<'hir> TypeContext<'hir> {
-    fn new(module: &'hir Module, source_file: &'hir SourceFile) -> Self {
+    fn new(module: &'hir hir::Module, source_file: &'hir SourceFile) -> Self {
         Self {
             module,
             source_file,
@@ -1800,13 +1800,21 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
 
 #[derive(Debug)]
 pub struct ModuleTypeCheckResults {
-    item_results: BTreeMap<hir::LocalDefId, TypeCheckResults>,
+    pub item_types: BTreeMap<hir::LocalDefId, Type>,
+    pub function_results: BTreeMap<hir::LocalDefId, TypeCheckResults>,
+}
+
+impl ModuleTypeCheckResults {
+    #[track_caller]
+    pub fn get_type(&self, hir_id: hir::HirId) -> Type {
+        self.function_results[&hir_id.owner].node_types[&hir_id.local_id].clone()
+    }
 }
 
 #[derive(Debug)]
 pub struct TypeCheckResults {
-    owner_id: hir::LocalDefId,
-    node_types: BTreeMap<hir::ItemLocalId, Type>,
+    pub owner_id: hir::LocalDefId,
+    pub node_types: BTreeMap<hir::ItemLocalId, Type>,
 }
 
 pub fn type_check_module(module: &hir::Module, source_file: &SourceFile) -> ModuleTypeCheckResults {
@@ -1818,9 +1826,7 @@ pub fn type_check_module(module: &hir::Module, source_file: &SourceFile) -> Modu
     };
     hir::visit::walk_module(&mut global_indexer, module);
 
-    let mut results = ModuleTypeCheckResults {
-        item_results: BTreeMap::new(),
-    };
+    let mut function_results = BTreeMap::new();
 
     let mut tainted_with_errors = false;
 
@@ -1838,14 +1844,12 @@ pub fn type_check_module(module: &hir::Module, source_file: &SourceFile) -> Modu
             next_float_variable_id: FloatVariableId::new(0),
         };
 
-        let OwnerNode::Item(item) = module.get_owner(owner_id).node();
+        let hir::OwnerNode::Item(item) = module.get_owner(owner_id).node();
         hir::visit::walk_item(&mut body_ctx, item);
-
-        // println!("{:#?}", body_ctx.constraints);
 
         match body_ctx.into_output() {
             Ok(output) => {
-                results.item_results.insert(owner_id, output);
+                function_results.insert(owner_id, output);
             }
             Err(errors) => {
                 tainted_with_errors = true;
@@ -1861,5 +1865,8 @@ pub fn type_check_module(module: &hir::Module, source_file: &SourceFile) -> Modu
         std::process::exit(1);
     }
 
-    results
+    ModuleTypeCheckResults {
+        item_types: ctx.def_id_to_type_map,
+        function_results,
+    }
 }

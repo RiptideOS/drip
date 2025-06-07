@@ -3,14 +3,14 @@
 use std::path::PathBuf;
 
 use clap::{CommandFactory, Parser as ClapParser, error::ErrorKind};
-use middle::type_check::type_check_module;
 
 use crate::{
-    frontend::{SourceFile, SourceFileOrigin, parser::Parser},
-    middle::{
-        ast_lowering::lower_to_hir,
-        // type_checker::TypeChecker
+    backend::{
+        early_optimizations::perform_early_optimizations, hir_lowering::lower_to_lir,
+        pretty_print::pretty_print_lir,
     },
+    frontend::{SourceFile, SourceFileOrigin, parser::Parser},
+    middle::{ast_lowering::lower_to_hir, type_check::type_check_module},
 };
 
 mod backend;
@@ -21,7 +21,41 @@ mod middle;
 #[derive(Debug, ClapParser)]
 #[command(version, about, long_about = None)]
 pub struct Args {
+    #[arg(short = 'e', value_enum, default_value_t = Default::default())]
+    emit: EmitFormat,
+    #[arg(short = 'O', value_enum, default_value_t = Default::default())]
+    optimization_level: OptimizationLevel,
     source_files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum EmitFormat {
+    #[default]
+    #[value(name = "exe")]
+    Executable,
+    #[value(name = "obj")]
+    Object,
+    #[value(name = "asm")]
+    Assembly,
+    #[value(name = "lir")]
+    Lir,
+    #[value(name = "hir")]
+    Hir,
+    #[value(name = "ast")]
+    Ast,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+pub enum OptimizationLevel {
+    #[default]
+    #[value(name = "0")]
+    Zero,
+    #[value(name = "1")]
+    One,
+    #[value(name = "2")]
+    Two,
+    #[value(name = "3")]
+    Three,
 }
 
 fn main() {
@@ -72,13 +106,35 @@ fn main() {
     for source_file in &source_files {
         // Construct AST from the source code
         let ast = Parser::parse_module(source_file);
-        // println!("{ast:#?}");
+
+        if args.emit == EmitFormat::Ast {
+            println!("{ast:#?}");
+            return;
+        }
 
         // Index AST and resolve names to produce HIR
         let hir = lower_to_hir(&ast);
-        // println!("{hir:#?}");
+
+        if args.emit == EmitFormat::Hir {
+            println!("{hir:#?}");
+            return;
+        }
 
         let types = type_check_module(&hir, source_file);
-        println!("{types:#?}");
+        let lir = lower_to_lir(&hir, &types);
+
+        let mut function = lir.function_definitions.into_values().next().unwrap();
+        // pretty_print_lir(&function);
+        // println!();
+
+        if args.optimization_level > OptimizationLevel::Zero {
+            perform_early_optimizations(&mut function);
+            // pretty_print_lir(&function);
+        }
+
+        // if args.emit == EmitFormat::Lir {
+        pretty_print_lir(&function);
+        //     return;
+        // }
     }
 }

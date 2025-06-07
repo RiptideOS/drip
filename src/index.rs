@@ -92,6 +92,14 @@ impl<I: Index, T> IndexVec<I, T> {
     }
 
     #[inline]
+    pub fn into_entries(self) -> impl Iterator<Item = (I, T)> {
+        self.raw
+            .into_iter()
+            .enumerate()
+            .map(|(i, v)| (I::new(i), v))
+    }
+
+    #[inline]
     pub fn len(&self) -> usize {
         self.raw.len()
     }
@@ -132,5 +140,10 @@ impl<I: Index, T> core::ops::Index<I> for IndexVec<I, T> {
 
     fn index(&self, index: I) -> &Self::Output {
         self.get(index).unwrap()
+    }
+}
+impl<I: Index, T> core::ops::IndexMut<I> for IndexVec<I, T> {
+    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+        self.get_mut(index).unwrap()
     }
 }

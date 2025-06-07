@@ -210,26 +210,44 @@ pub struct BinaryOperator {
     pub kind: BinaryOperatorKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display)]
 pub enum BinaryOperatorKind {
-    Add,                  // +
-    Subtract,             // -
-    Multiply,             // *
-    Divide,               // /
-    Modulus,              // %
-    Equals,               // ==
-    NotEquals,            // !=
-    LessThan,             // <
-    LessThanOrEqualTo,    // <=
-    GreaterThan,          // >
-    GreaterThanOrEqualTo, // >=
-    LogicalAnd,           // &&
-    LogicalOr,            // ||
-    BitwiseAnd,           // &
-    BitwiseOr,            // |
-    BitwiseXor,           // ^
-    ShiftLeft,            // <<
-    ShiftRight,           // >>
+    #[strum(serialize = "+")]
+    Add,
+    #[strum(serialize = "-")]
+    Subtract,
+    #[strum(serialize = "*")]
+    Multiply,
+    #[strum(serialize = "/")]
+    Divide,
+    #[strum(serialize = "%")]
+    Modulus,
+    #[strum(serialize = "==")]
+    Equals,
+    #[strum(serialize = "!=")]
+    NotEquals,
+    #[strum(serialize = "<")]
+    LessThan,
+    #[strum(serialize = "<=")]
+    LessThanOrEqualTo,
+    #[strum(serialize = ">")]
+    GreaterThan,
+    #[strum(serialize = ">=")]
+    GreaterThanOrEqualTo,
+    #[strum(serialize = "&&")]
+    LogicalAnd,
+    #[strum(serialize = "||")]
+    LogicalOr,
+    #[strum(serialize = "&")]
+    BitwiseAnd,
+    #[strum(serialize = "|")]
+    BitwiseOr,
+    #[strum(serialize = "^")]
+    BitwiseXor,
+    #[strum(serialize = "<<")]
+    ShiftLeft,
+    #[strum(serialize = ">")]
+    ShiftRight,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,7 +287,7 @@ pub struct UnaryOperator {
     pub kind: UnaryOperatorKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnaryOperatorKind {
     Deref,      // *
     AddressOf,  // &
