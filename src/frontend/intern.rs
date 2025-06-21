@@ -10,13 +10,13 @@ pub struct InterningTable {
 pub static INTERNING_TABLE: Lazy<Arc<InterningTable>> = Lazy::new(Default::default);
 
 impl InterningTable {
-    pub fn get(&self, index: usize) -> Option<&str> {
+    pub fn get(&self, index: u32) -> Option<&str> {
         let strings = self.strings.read().unwrap();
 
-        strings.get(index).copied()
+        strings.get(index as usize).copied()
     }
 
-    pub fn insert_if_absent(&self, string: &str) -> usize {
+    pub fn insert_if_absent(&self, string: &str) -> u32 {
         if let Some(index) = self.index_of(string) {
             return index;
         }
@@ -24,25 +24,29 @@ impl InterningTable {
         let mut strings = self.strings.write().unwrap();
 
         strings.push(Box::leak(Box::new(string.to_owned())));
-        strings.len() - 1
+        (strings.len() - 1) as _
     }
 
-    pub fn index_of(&self, string: &str) -> Option<usize> {
+    pub fn index_of(&self, string: &str) -> Option<u32> {
         let strings = self.strings.read().unwrap();
 
-        strings.iter().position(|s| *s == string)
+        strings.iter().position(|s| *s == string).map(|i| i as _)
     }
 }
 
 /// An index into the string interning table
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct InternedSymbol(usize);
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InternedSymbol(u32);
 
 impl InternedSymbol {
     pub fn new(value: &str) -> Self {
         let index = INTERNING_TABLE.insert_if_absent(value);
 
         Self(index)
+    }
+
+    pub fn as_u32(self) -> u32 {
+        self.0
     }
 
     pub fn value(&self) -> &'static str {

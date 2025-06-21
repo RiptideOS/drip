@@ -1,9 +1,20 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    rc::Rc,
+};
+
+use hashbrown::HashSet;
 
 use crate::{
     frontend::intern::InternedSymbol,
     index::{Index, IndexVec},
-    middle::{hir, lir, ty, type_check::ModuleTypeCheckResults},
+    middle::{
+        hir,
+        lir::{self, StaticLabelId},
+        primitive::{IntKind, UIntKind},
+        ty,
+        type_check::ModuleTypeCheckResults,
+    },
 };
 
 struct BodyLowereringContext<'hir> {
@@ -11,6 +22,10 @@ struct BodyLowereringContext<'hir> {
     type_map: &'hir ModuleTypeCheckResults,
     owner_id: hir::LocalDefId,
     symbol_name: InternedSymbol,
+
+    next_static_label_id: &'hir mut StaticLabelId,
+    static_strings: &'hir mut BTreeMap<lir::StaticLabelId, InternedSymbol>,
+    static_c_strings: &'hir mut BTreeMap<lir::StaticLabelId, InternedSymbol>,
 
     register_map: IndexVec<lir::RegisterId, lir::Register>,
     local_to_register_map: BTreeMap<hir::ItemLocalId, lir::RegisterId>,
@@ -22,7 +37,19 @@ struct BodyLowereringContext<'hir> {
 }
 
 impl<'hir> BodyLowereringContext<'hir> {
+    fn create_static_label_id(&mut self) -> lir::StaticLabelId {
+        let prev = *self.next_static_label_id;
+        self.next_static_label_id.increment_by(1);
+        prev
+    }
+
     fn create_register(&mut self, ty: ty::Type) -> lir::RegisterId {
+        let id = self.register_map.next_index();
+        let ty = self.lower_type(ty);
+        self.register_map.push(lir::Register { id, ty })
+    }
+
+    fn create_register_with_lir_type(&mut self, ty: lir::Type) -> lir::RegisterId {
         let id = self.register_map.next_index();
         self.register_map.push(lir::Register { id, ty })
     }
@@ -49,6 +76,49 @@ impl<'hir> BodyLowereringContext<'hir> {
             registers: self.register_map.into_entries().collect(),
             arguments: self.arguments,
             blocks: self.block_map.into_entries().collect(),
+        }
+    }
+
+    fn lower_type(&mut self, ty: ty::Type) -> lir::Type {
+        //  match &*ty {
+        //     ty::TypeKind::Integer(IntKind::I8)
+        //     | ty::TypeKind::UnsignedInteger(UIntKind::U8) => {
+        //         lir::IntegerWidth::I8
+        //     }
+        //     ty::TypeKind::Integer(IntKind::I16)
+        //     | ty::TypeKind::UnsignedInteger(UIntKind::U16) => {
+        //         lir::IntegerWidth::I16
+        //     }
+        //     ty::TypeKind::Integer(IntKind::I32)
+        //     | ty::TypeKind::UnsignedInteger(UIntKind::U32) => {
+        //         lir::IntegerWidth::I32
+        //     }
+        //     ty::TypeKind::Integer(IntKind::I64)
+        //     | ty::TypeKind::UnsignedInteger(UIntKind::U64)
+        //     | ty::TypeKind::Integer(IntKind::ISize)
+        //     | ty::TypeKind::UnsignedInteger(UIntKind::USize) => {
+        //         lir::IntegerWidth::I64
+        //     }
+        //     _ => unreachable!(),
+        // }
+        match &*ty {
+            ty::TypeKind::Unit => todo!("what do we do here?"),
+            ty::TypeKind::Bool => lir::Type::Integer(lir::IntegerWidth::I8),
+            ty::TypeKind::Char => lir::Type::Integer(lir::IntegerWidth::I32),
+            ty::TypeKind::Integer(int_kind) => lir::Type::Integer((*int_kind).into()),
+            ty::TypeKind::UnsignedInteger(uint_kind) => lir::Type::Integer((*uint_kind).into()),
+            ty::TypeKind::Float(float_kind) => lir::Type::Float((*float_kind).into()),
+            ty::TypeKind::CStr | ty::TypeKind::Pointer(_) => lir::Type::Pointer,
+            ty::TypeKind::Str | ty::TypeKind::Slice(_) => lir::Type::Struct(lir::Struct::slice()),
+            ty::TypeKind::Array { ty, length } => {
+                lir::Type::Array(Rc::new(self.lower_type(ty.clone())), *length)
+            }
+            ty::TypeKind::Tuple(items) => lir::Type::Struct(lir::Struct(
+                items.iter().map(|ty| self.lower_type(ty.clone())).collect(),
+            )),
+            ty::TypeKind::FunctionPointer { .. } => lir::Type::Pointer,
+            ty::TypeKind::Any => unreachable!("any should always be within a pointer type"),
+            ty::TypeKind::Never | ty::TypeKind::Infer(_) | ty::TypeKind::Error => unreachable!(),
         }
     }
 }
@@ -78,8 +148,9 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
 
         // Main implicitly returns 0 even if the signature does not
         // say so
-        let value = (self.symbol_name.value() == "main")
-            .then_some(lir::Operand::Immediate(lir::Immediate::Int(0)));
+        let value = (self.symbol_name.value() == "main").then_some(lir::Operand::Immediate(
+            lir::Immediate::Int(0, lir::IntegerWidth::I8),
+        ));
 
         self.block_map[current_block]
             .instructions
@@ -107,16 +178,93 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
             hir::ExpressionKind::Literal(literal) => {
                 let value = match literal {
                     hir::Literal::Boolean(v) => lir::Immediate::Bool(*v),
-                    hir::Literal::Char(v) => lir::Immediate::Int(*v as u64),
-                    hir::Literal::Integer(v, _) => lir::Immediate::Int(*v),
+                    hir::Literal::Char(v) => lir::Immediate::Int(*v as u64, lir::IntegerWidth::I32),
+                    hir::Literal::Integer(v, k) => lir::Immediate::Int(
+                        *v,
+                        match k {
+                            hir::LiteralIntegerKind::Signed(int_kind) => (*int_kind).into(),
+                            hir::LiteralIntegerKind::Unsigned(uint_kind) => (*uint_kind).into(),
+                            hir::LiteralIntegerKind::Unsuffixed => {
+                                let ty = self.type_map.get_type(expression.hir_id);
+
+                                match &*ty {
+                                    ty::TypeKind::Integer(int_kind) => (*int_kind).into(),
+                                    ty::TypeKind::UnsignedInteger(uint_kind) => (*uint_kind).into(),
+                                    _ => unreachable!(),
+                                }
+                            }
+                        },
+                    ),
                     hir::Literal::Float(..) => todo!("load float"),
-                    hir::Literal::String(_) => {
-                        todo!("load string (need to allocate in static mem)")
+                    hir::Literal::String(s) => {
+                        // strings are actually fat pointers which need to be
+                        // stored as structs on the stack. we need to allocate
+                        // room for the string struct, fill its fields with the
+                        // static pointer and length, and then return the
+                        // register which stores the pointer as the target of
+                        // the move instead of an immediate.
+
+                        /* Create the struct on the stack */
+
+                        let struct_ptr_reg = self.create_register_with_lir_type(lir::Type::Pointer);
+
+                        self.push_instruction(lir::Instruction::AllocStack {
+                            destination: struct_ptr_reg,
+                            ty: lir::Type::Struct(lir::Struct::slice()),
+                        });
+
+                        /* Set the pointer field */
+
+                        let pointer_element_ptr_reg =
+                            self.create_register_with_lir_type(lir::Type::Pointer);
+                        self.push_instruction(lir::Instruction::GetStructElementPointer {
+                            destination: pointer_element_ptr_reg,
+                            source: lir::Operand::Register(struct_ptr_reg),
+                            ty: lir::Struct::slice(),
+                            index: 0,
+                        });
+
+                        let id = self.create_static_label_id();
+                        self.static_strings.insert(id, *s);
+                        self.push_instruction(lir::Instruction::StoreMem {
+                            destination: lir::Operand::Register(pointer_element_ptr_reg),
+                            source: lir::Operand::Immediate(lir::Immediate::StaticPointer(id)),
+                        });
+
+                        /* Set the length field */
+
+                        let length_element_ptr_reg =
+                            self.create_register_with_lir_type(lir::Type::Pointer);
+                        self.push_instruction(lir::Instruction::GetStructElementPointer {
+                            destination: length_element_ptr_reg,
+                            source: lir::Operand::Register(struct_ptr_reg),
+                            ty: lir::Struct::slice(),
+                            index: 1,
+                        });
+
+                        self.push_instruction(lir::Instruction::StoreMem {
+                            destination: lir::Operand::Register(length_element_ptr_reg),
+                            source: lir::Operand::Immediate(lir::Immediate::Int(
+                                s.value().len() as _,
+                                lir::IntegerWidth::I64,
+                            )),
+                        });
+
+                        /* Move operand is the reg that points to the base of the struct */
+
+                        self.expression_to_register_map
+                            .insert(expression.hir_id.local_id, struct_ptr_reg);
+                        return;
                     }
                     hir::Literal::ByteString(_) => {
+                        // byte strings follow the same rule as above since they
+                        // are native slices (fat pointers) and not just a
+                        // pointer to some bytes.
                         todo!("load byte string (need to allocate in static mem)")
                     }
                     hir::Literal::CString(_) => {
+                        // c strings are much simpler since they are just fancy
+                        // raw pointers
                         todo!("load c string (need to allocate in static mem)")
                     }
                 };
@@ -134,10 +282,13 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
             hir::ExpressionKind::Path(path) => {
                 hir::visit::walk_expression(self, expression.clone());
 
-                let reg =
-                    self.expression_to_register_map[&path.segments.last().unwrap().hir_id.local_id];
-                self.expression_to_register_map
-                    .insert(expression.hir_id.local_id, reg);
+                if let Some(reg) = self
+                    .expression_to_register_map
+                    .get(&path.segments.last().unwrap().hir_id.local_id)
+                {
+                    self.expression_to_register_map
+                        .insert(expression.hir_id.local_id, *reg);
+                }
             }
             hir::ExpressionKind::Block(block) => {
                 hir::visit::walk_expression(self, expression.clone());
@@ -148,7 +299,71 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
                 }
             }
             hir::ExpressionKind::Tuple(expressions) => todo!(),
-            hir::ExpressionKind::FunctionCall { target, arguments } => todo!(),
+            hir::ExpressionKind::FunctionCall { target, arguments } => {
+                hir::visit::walk_expression(self, expression.clone());
+
+                let hir::ExpressionKind::Path(path) = &target.kind else {
+                    todo!("lower function pointer calls")
+                };
+
+                let hir::Resolution::IntrinsicFunction(name) = path.resolution() else {
+                    todo!("non-intrinsic functions");
+                };
+
+                if name.value() != "print" {
+                    todo!("non-print functions");
+                }
+
+                assert_eq!(arguments.len(), 1, "no variadic print for now");
+
+                let str_ptr_reg = self.expression_to_register_map[&arguments[0].hir_id.local_id];
+
+                /* Extract struct fields */
+
+                let ptr_ptr_reg = self.create_register_with_lir_type(lir::Type::Pointer);
+                self.push_instruction(lir::Instruction::GetStructElementPointer {
+                    destination: ptr_ptr_reg,
+                    source: lir::Operand::Register(str_ptr_reg),
+                    ty: lir::Struct::slice(),
+                    index: 0,
+                });
+                let ptr_reg = self.create_register_with_lir_type(lir::Type::Pointer);
+                self.push_instruction(lir::Instruction::LoadMem {
+                    destination: ptr_reg,
+                    source: lir::Operand::Register(ptr_ptr_reg),
+                });
+
+                let len_ptr_reg =
+                    self.create_register_with_lir_type(lir::Type::Integer(lir::IntegerWidth::I64));
+                self.push_instruction(lir::Instruction::GetStructElementPointer {
+                    destination: len_ptr_reg,
+                    source: lir::Operand::Register(str_ptr_reg),
+                    ty: lir::Struct::slice(),
+                    index: 1,
+                });
+                let len_reg =
+                    self.create_register_with_lir_type(lir::Type::Integer(lir::IntegerWidth::I64));
+                self.push_instruction(lir::Instruction::LoadMem {
+                    destination: len_reg,
+                    source: lir::Operand::Register(len_ptr_reg),
+                });
+
+                let dest_reg =
+                    self.create_register_with_lir_type(lir::Type::Integer(lir::IntegerWidth::I64));
+
+                self.push_instruction(lir::Instruction::Syscall {
+                    number: 1, // write
+                    arguments: vec![
+                        lir::Operand::Immediate(lir::Immediate::Int(1, lir::IntegerWidth::I64)),
+                        lir::Operand::Register(ptr_reg),
+                        lir::Operand::Register(len_reg),
+                    ],
+                    destination: dest_reg,
+                });
+
+                self.expression_to_register_map
+                    .insert(expression.hir_id.local_id, dest_reg);
+            }
             hir::ExpressionKind::Binary { lhs, operator, rhs } => {
                 hir::visit::walk_expression(self, expression.clone());
 
@@ -334,7 +549,10 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
                 // Main implicitly returns 0 even if the signature does not
                 // say so
                 let value = if self.symbol_name.value() == "main" {
-                    Some(value.unwrap_or(lir::Operand::Immediate(lir::Immediate::Int(0))))
+                    Some(value.unwrap_or(lir::Operand::Immediate(lir::Immediate::Int(
+                        0,
+                        lir::IntegerWidth::I8,
+                    ))))
                 } else {
                     value
                 };
@@ -354,7 +572,7 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
                 self.expression_to_register_map
                     .insert(segment.hir_id.local_id, reg);
             }
-            hir::Resolution::IntrinsicFunction(interned_symbol) => todo!(),
+            hir::Resolution::IntrinsicFunction(interned_symbol) => {}
             hir::Resolution::Primitive(primitive_kind) => {}
         }
     }
@@ -362,6 +580,10 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
 
 pub fn lower_to_lir(module: &hir::Module, type_map: &ModuleTypeCheckResults) -> lir::Module {
     let mut function_definitions = BTreeMap::new();
+
+    let mut next_static_label_id = StaticLabelId::new(0);
+    let mut static_strings = BTreeMap::new();
+    let mut static_c_strings = BTreeMap::new();
 
     for owner_id in module.get_owners() {
         let hir::ItemKind::Function { name, .. } =
@@ -372,6 +594,9 @@ pub fn lower_to_lir(module: &hir::Module, type_map: &ModuleTypeCheckResults) -> 
             owner_id,
             symbol_name: name.symbol,
             type_map,
+            next_static_label_id: &mut next_static_label_id,
+            static_strings: &mut static_strings,
+            static_c_strings: &mut static_c_strings,
             register_map: IndexVec::new(),
             arguments: Vec::new(),
             block_map: IndexVec::new(),
@@ -388,5 +613,7 @@ pub fn lower_to_lir(module: &hir::Module, type_map: &ModuleTypeCheckResults) -> 
 
     lir::Module {
         function_definitions,
+        static_strings,
+        static_c_strings,
     }
 }

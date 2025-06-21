@@ -64,7 +64,7 @@ impl<'ast> Resolver {
                     .iter()
                     .map(|p| (InternedSymbol::new(&p.to_string()), *p)),
             ),
-            builtin_functions: BTreeSet::from([InternedSymbol::new("println")]),
+            builtin_functions: BTreeSet::from([InternedSymbol::new("print")]),
             next_def_id: hir::LocalDefId::new(0), // TODO: should this be reserved for the module itself?
             node_to_def_id_map: BTreeMap::new(),
             global_value_scope: BTreeMap::new(),

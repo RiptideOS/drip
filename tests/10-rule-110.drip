@@ -2,7 +2,7 @@
 //! show that a programming language is turring complete
 
 // This is where we get Int32Vec
-include core::collections;
+//include core::collections;
 
 /// Applies Rule 110 to a given neighborhood.
 fn rule110(neighborhood: (i32, i32, i32)) {
@@ -28,22 +28,25 @@ fn rule110(neighborhood: (i32, i32, i32)) {
 }
 
 /// Evolves a row of cells over a number of generations.
-fn evolve(initial_cells: Int32Vec, generations: usize) {
+fn evolve(initial_cells: *Int32Vec, generations: usize) {
     let mut previous_cells = cells;
     let mut current_cells = Int32Vec::new();
 
-    for _ in 0..generations {
+    let mut generation = 0;
+    while generation < generations {
         current_cells.clear();
 
         let previous_len = previous_cells.length;
 
-        for i in 0..previous_len {
+        let mut i = 0;
+        while i < previous_len {
             let neighborhood = (
                 previous_cells[(i - 1) % previous_len],
                 previous_cells[i],
                 previous_cells[(i + 1) % previous_len],
             );
             current_cells.push(rule110(neighborhood));
+            i += 1;
         }
 
         for cell in current_cells {
@@ -57,6 +60,7 @@ fn evolve(initial_cells: Int32Vec, generations: usize) {
         println("");
 
         swap(previous_cells, current_cells);
+        generation += 1;
     }
 }
 

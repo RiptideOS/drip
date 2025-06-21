@@ -154,13 +154,13 @@ impl<'hir> TypeContext<'hir> {
             }
             hir::Resolution::Primitive(primitive_kind) => self.get_primitive_type(primitive_kind),
             hir::Resolution::IntrinsicFunction(name) => match name.value() {
-                "println" => {
-                    let unit_ty = self.get_unit_type();
+                "print" => {
+                    let ret_ty = self.get_primitive_type(PrimitiveKind::Int(IntKind::I64));
                     let str_ty = self.get_primitive_type(PrimitiveKind::Str);
 
                     self.intern_type(TypeKind::FunctionPointer {
                         parameters: [str_ty].into(),
-                        return_type: unit_ty,
+                        return_type: ret_ty,
                         is_variadic: true,
                     })
                 }

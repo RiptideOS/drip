@@ -1270,11 +1270,22 @@ impl<'source> Parser<'source> {
             )),
         };
 
+        let value = self.lexer.source().value_of_span(token.span);
+
+        let symbol = match kind {
+            LiteralKind::String => InternedSymbol::new(
+                &value[1..value.len() - 1]
+                    .replace("\\n", "\n")
+                    .replace("\\r", "\r"),
+            ),
+            _ => InternedSymbol::new(value),
+        };
+
         Literal {
             id: self.create_node_id(),
             span: token.span,
             kind,
-            symbol: InternedSymbol::new(self.lexer.source().value_of_span(token.span)),
+            symbol,
         }
     }
 }

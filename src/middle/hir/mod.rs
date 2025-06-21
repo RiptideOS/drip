@@ -16,9 +16,9 @@ use crate::{
     index::IndexVec,
 };
 
+pub mod ast_lowering;
 pub mod id;
 pub mod visit;
-pub mod ast_lowering;
 
 pub use id::*;
 
@@ -347,6 +347,16 @@ pub enum ExpressionKind {
     Return(Option<Rc<Expression>>),
 }
 
+impl ExpressionKind {
+    pub fn as_literal(&self) -> Option<&Literal> {
+        if let Self::Literal(l) = self {
+            Some(l)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Literal {
     Boolean(bool),
@@ -358,12 +368,22 @@ pub enum Literal {
     CString(Rc<[u8]>),
 }
 
+impl Literal {
+    pub fn as_string(&self) -> Option<InternedSymbol> {
+        if let Self::String(s) = self {
+            Some(*s)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum LiteralIntegerKind {
-    /// e.g. `42_u32`
-    Unsigned(UIntKind),
     /// e.g. `42_i32`
     Signed(IntKind),
+    /// e.g. `42_u32`
+    Unsigned(UIntKind),
     /// e.g. `42`
     Unsuffixed,
 }

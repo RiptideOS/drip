@@ -6,6 +6,7 @@ use itertools::Itertools;
 use crate::{
     backend::{CodegenOptions, target::CodeGenerator},
     frontend::ast::BinaryOperatorKind,
+    index::Index,
     middle::lir,
 };
 
@@ -13,6 +14,18 @@ pub struct CodeGeneratorX86_64LinuxGnu;
 
 impl CodeGenerator for CodeGeneratorX86_64LinuxGnu {
     fn translate_to_asm(&self, module: &lir::Module, options: &CodegenOptions) -> String {
+        let static_strings = module
+            .static_strings
+            .iter()
+            .map(|(id, symbol)| {
+                format!(
+                    r#"__$static_alloc_{}: db {}"#,
+                    id.index(),
+                    format_nasm_string(symbol.value())
+                )
+            })
+            .join("\n");
+
         let function_bodies = module
             .function_definitions
             .values()
@@ -22,6 +35,7 @@ impl CodeGenerator for CodeGeneratorX86_64LinuxGnu {
         format!(
             indoc::indoc! {r#"
             global _start
+            global main
 
             bits 64
             section .text
@@ -36,9 +50,15 @@ impl CodeGenerator for CodeGeneratorX86_64LinuxGnu {
                 syscall
 
             {0}
+
+            ; static data
+            section .data
+            
+            ; utf-8 strings
+            {1}
             "#
             },
-            function_bodies,
+            function_bodies, static_strings
         )
     }
 
@@ -75,6 +95,8 @@ impl CodeGenerator for CodeGeneratorX86_64LinuxGnu {
             "-v",
             "-nostdlib",
             "-ffreestanding",
+            "-Xlinker",
+            "-x",
             "-o",
             output_file
                 .to_str()
@@ -88,11 +110,33 @@ impl CodeGenerator for CodeGeneratorX86_64LinuxGnu {
     }
 }
 
+fn format_nasm_string(string: &str) -> String {
+    let mut parts = Vec::new();
+
+    let mut last = 0;
+    for (index, matched) in string.match_indices(['\n', '\r']) {
+        if last != index {
+            parts.push(format!("\"{}\"", &string[last..index]));
+        }
+
+        for b in matched.bytes() {
+            parts.push(format!("0x{b:X}"));
+        }
+
+        last = index + matched.len();
+    }
+    if last < string.len() {
+        parts.push(format!("\"{}\"", &string[last..]));
+    }
+
+    parts.join(", ")
+}
+
 fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions) -> String {
     let stack_frame_register_size_map: BTreeMap<_, _> = function
         .registers
         .values()
-        .map(|r| (r.id, r.ty.size()))
+        .map(|r| (r.id, r.ty.layout().size))
         .collect();
 
     let mut stack_frame_register_offset_map = BTreeMap::new();
@@ -178,12 +222,58 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
             );
 
             match instruction {
+                lir::Instruction::LoadMem {
+                    destination,
+                    source,
+                } => {
+                    load!(rax, source);
+                    emit!("    mov rax, [rax]");
+                    store!(destination, rax);
+                }
+                lir::Instruction::StoreMem {
+                    destination,
+                    source,
+                } => {
+                    load!(rax, source);
+                    load!(rbx, destination);
+                    emit!("    mov [rbx], rax");
+                }
+                lir::Instruction::AllocStack { destination, ty } => {
+                    emit!(
+                        "    sub rsp, {}",
+                        lir::align_to(ty.layout().size, ty.layout().alignment)
+                    );
+                    store!(destination, rsp);
+                }
+                lir::Instruction::GetStructElementPointer {
+                    destination,
+                    source,
+                    ty,
+                    index,
+                } => {
+                    load!(rax, source);
+                    emit!("    lea rax, [rax + {}]", ty.offset_of(*index));
+                    store!(destination, rax);
+                }
+                lir::Instruction::GetArrayElementPointer {
+                    destination,
+                    source,
+                    ty,
+                    index,
+                } => todo!(),
                 lir::Instruction::Move {
                     destination,
                     source,
                 } => {
                     load!(rax, source);
                     store!(destination, rax);
+                }
+                lir::Instruction::IntegerCast {
+                    kind,
+                    destination,
+                    operand,
+                } => {
+                    todo!("emit asm for integer cast")
                 }
                 lir::Instruction::UnaryOperation {
                     operator: _,
@@ -198,6 +288,12 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                 } => {
                     load!(rax, lhs);
                     load!(rbx, rhs);
+
+                    // TODO: seprate into several instructions. group all
+                    // sign-agnostic math instructions (and specify size) which
+                    // includes equality, group signed math instructions (with
+                    // specified size), group unsigned math instructions (with
+                    // specified size)
 
                     match operator {
                         BinaryOperatorKind::Add => todo!(),
@@ -235,7 +331,10 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                             assert!(matches!(immediate, lir::Immediate::Bool(_)))
                         }
                         lir::Operand::Register(register_id) => {
-                            assert!(function.registers[register_id].ty.is_bool())
+                            assert!(matches!(
+                                function.registers[register_id].ty,
+                                lir::Type::Integer(lir::IntegerWidth::I8)
+                            ))
                         }
                     }
 
@@ -258,10 +357,30 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                     emit!("    jmp .exit");
                 }
                 lir::Instruction::FunctionCall {
-                    target: _,
+                    target,
                     arguments: _,
-                    destination: _,
-                } => todo!(),
+                    destination,
+                } => {
+                    assert!(matches!(function.registers[target].ty, lir::Type::Pointer));
+                    assert_eq!(*destination, None, "return values not supported yet");
+
+                    todo!("define function call abi")
+                }
+                lir::Instruction::Syscall {
+                    number,
+                    arguments,
+                    destination,
+                } => {
+                    assert_eq!(arguments.len(), 3);
+
+                    emit!("    mov rax, {}", number);
+                    load!(rdi, &arguments[0]);
+                    load!(rsi, &arguments[1]);
+                    load!(rdx, &arguments[2]);
+                    emit!("    syscall");
+
+                    store!(destination, rax);
+                }
                 lir::Instruction::Phi { .. } => {
                     unreachable!("phi instructions should be eliminated before codegen")
                 }

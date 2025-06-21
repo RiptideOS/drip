@@ -223,12 +223,20 @@ fn propagate_constants(function: &mut lir::FunctionDefinition) {
                 lir::Instruction::BinaryOperation {
                     destination,
                     operator,
-                    lhs: lir::Operand::Immediate(lir::Immediate::Int(lhs)),
-                    rhs: lir::Operand::Immediate(lir::Immediate::Int(rhs)),
-                } => {
+                    lhs: lir::Operand::Immediate(lir::Immediate::Int(lhs, lhs_width)),
+                    rhs: lir::Operand::Immediate(lir::Immediate::Int(rhs, rhs_width)),
+                } if lhs_width == rhs_width => {
                     let value = match operator {
-                        BinaryOperatorKind::Add => lir::Immediate::Int(*lhs + *rhs),
-                        BinaryOperatorKind::Multiply => lir::Immediate::Int(*lhs * *rhs),
+                        BinaryOperatorKind::Add => {
+                            // overflows are handled because any smaller
+                            // integers will just be truncated automatically
+                            lir::Immediate::Int(lhs.wrapping_add(*rhs), *lhs_width)
+                        }
+                        BinaryOperatorKind::Multiply => {
+                            // overflows are handled because any smaller
+                            // integers will just be truncated automatically
+                            lir::Immediate::Int(lhs.wrapping_mul(*rhs), *lhs_width)
+                        }
                         BinaryOperatorKind::Equals => lir::Immediate::Bool(*lhs == *rhs),
                         _ => continue,
                     };

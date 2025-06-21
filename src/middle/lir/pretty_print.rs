@@ -39,11 +39,52 @@ pub fn pretty_print_lir(function: &lir::FunctionDefinition) {
 impl core::fmt::Display for lir::Instruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            lir::Instruction::LoadMem {
+                destination,
+                source,
+            } => write!(f, "{destination} {} load {source}", "=".white()),
+            lir::Instruction::StoreMem {
+                destination,
+                source,
+            } => {
+                write!(f, "store {destination} {} {source}", "<-".white())
+            }
+            lir::Instruction::AllocStack { destination, ty } => {
+                write!(f, "{destination} {} alloc {ty}", "=".white())
+            }
+            lir::Instruction::GetStructElementPointer {
+                destination,
+                source,
+                ty,
+                index,
+            } => write!(
+                f,
+                "{destination} {} get_struct_element_ptr {source}, {}, {index}",
+                "=".white(),
+                lir::Type::Struct(ty.clone())
+            ),
+            lir::Instruction::GetArrayElementPointer {
+                destination,
+                source,
+                ty,
+                index,
+            } => write!(
+                f,
+                "{destination} {} get_array_element_ptr {source}, {ty}, {index}",
+                "=".white(),
+            ),
             lir::Instruction::Move {
                 destination,
                 source,
             } => {
                 write!(f, "{destination} {} {source}", "=".white())
+            }
+            lir::Instruction::IntegerCast {
+                kind,
+                destination,
+                operand,
+            } => {
+                todo!()
             }
             lir::Instruction::UnaryOperation {
                 operator,
@@ -99,6 +140,19 @@ impl core::fmt::Display for lir::Instruction {
             } => {
                 todo!();
             }
+            lir::Instruction::Syscall {
+                number,
+                arguments,
+                destination,
+            } => {
+                write!(f, "{destination} = {} {number}, ", "syscall".cyan())?;
+
+                write!(
+                    f,
+                    "{}",
+                    arguments.iter().map(|op| op.to_string()).join(", ").white()
+                )
+            }
             lir::Instruction::Phi {
                 destination,
                 sources,
@@ -143,9 +197,12 @@ impl core::fmt::Display for lir::BlockId {
 impl core::fmt::Display for lir::Immediate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            lir::Immediate::Int(value) => write!(f, "{value}"),
-            lir::Immediate::Float(value) => write!(f, "{value}"),
+            lir::Immediate::Int(value, _) => write!(f, "{value}"),
+            lir::Immediate::Float(value, _) => write!(f, "{value}"),
             lir::Immediate::Bool(value) => write!(f, "{value}"),
+            lir::Immediate::StaticPointer(value) => {
+                write!(f, "__$static_alloc_{}", value.index())
+            }
         }
     }
 }
@@ -155,6 +212,44 @@ impl core::fmt::Display for lir::Operand {
         match self {
             lir::Operand::Immediate(immediate) => write!(f, "{}", immediate.to_string().purple()),
             lir::Operand::Register(register_id) => write!(f, "{register_id}"),
+        }
+    }
+}
+
+impl core::fmt::Display for lir::Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            lir::Type::Integer(integer_width) => write!(
+                f,
+                "{}",
+                match integer_width {
+                    lir::IntegerWidth::I8 => "i8",
+                    lir::IntegerWidth::I16 => "i16",
+                    lir::IntegerWidth::I32 => "i32",
+                    lir::IntegerWidth::I64 => "i64",
+                }
+            ),
+            lir::Type::Float(float_width) => write!(
+                f,
+                "{}",
+                match float_width {
+                    lir::FloatWidth::F32 => "f32",
+                    lir::FloatWidth::F64 => "f64",
+                }
+            ),
+            lir::Type::Pointer => write!(f, "ptr"),
+            lir::Type::Struct(fields) => {
+                write!(f, "{{ ")?;
+                for (i, field) in fields.0.iter().enumerate() {
+                    write!(f, "{i}: {field}")?;
+
+                    if i != fields.0.len() - 1 {
+                        write!(f, ", ")?;
+                    }
+                }
+                write!(f, " }}")
+            }
+            lir::Type::Array(ty, length) => write!(f, "[{}; {}]", ty, length),
         }
     }
 }
