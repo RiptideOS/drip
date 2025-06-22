@@ -42,15 +42,25 @@ impl core::fmt::Display for lir::Instruction {
             lir::Instruction::LoadMem {
                 destination,
                 source,
-            } => write!(f, "{destination} {} load {source}", "=".white()),
+            } => write!(
+                f,
+                "{destination} {} {} {source}",
+                "=".white(),
+                "load".cyan()
+            ),
             lir::Instruction::StoreMem {
                 destination,
                 source,
             } => {
-                write!(f, "store {destination} {} {source}", "<-".white())
+                write!(
+                    f,
+                    "{} {destination} {} {source}",
+                    "store".cyan(),
+                    "<-".white()
+                )
             }
             lir::Instruction::AllocStack { destination, ty } => {
-                write!(f, "{destination} {} alloc {ty}", "=".white())
+                write!(f, "{destination} {} {} {ty}", "=".white(), "alloc".cyan())
             }
             lir::Instruction::GetStructElementPointer {
                 destination,
@@ -59,8 +69,9 @@ impl core::fmt::Display for lir::Instruction {
                 index,
             } => write!(
                 f,
-                "{destination} {} get_struct_element_ptr {source}, {}, {index}",
+                "{destination} {} {} {source}, {}, {index}",
                 "=".white(),
+                "get_struct_element_ptr".cyan(),
                 lir::Type::Struct(ty.clone())
             ),
             lir::Instruction::GetArrayElementPointer {
@@ -70,8 +81,22 @@ impl core::fmt::Display for lir::Instruction {
                 index,
             } => write!(
                 f,
-                "{destination} {} get_array_element_ptr {source}, {ty}, {index}",
+                "{destination} {} {} {source}, {ty}, {index}",
                 "=".white(),
+                "get_array_element_ptr".cyan()
+            ),
+
+            lir::Instruction::ExtractStructFieldValue {
+                destination,
+                source,
+                ty,
+                index,
+            } => write!(
+                f,
+                "{destination} {} {} {source}, {}, {index}",
+                "=".white(),
+                "extract_value".cyan(),
+                lir::Type::Struct(ty.clone())
             ),
             lir::Instruction::Move {
                 destination,

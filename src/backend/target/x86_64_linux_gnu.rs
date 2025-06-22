@@ -261,6 +261,14 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                     ty,
                     index,
                 } => todo!(),
+                lir::Instruction::ExtractStructFieldValue {
+                    destination,
+                    source,
+                    ty,
+                    index,
+                } => {
+                    todo!()
+                }
                 lir::Instruction::Move {
                     destination,
                     source,

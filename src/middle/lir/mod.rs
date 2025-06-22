@@ -201,6 +201,19 @@ pub enum Instruction {
         /// Must be a valid index into the array (UB otherwise)
         index: usize,
     },
+    /// Loads the value of a field within a struct into the destination
+    /// register. This is a shortcut for `GetStructElementPointer` + `LoadMem`.
+    /// This operation requires that the size of the field is at most 8 bytes.
+    ExtractStructFieldValue {
+        /// Must be at most 8 bytes
+        destination: RegisterId,
+        /// Must be a pointer type
+        source: Operand,
+        /// The structure layout to use for the computation
+        ty: Struct,
+        /// Must be a valid index into the structure (Will panic otherwise)
+        index: usize,
+    },
     Move {
         destination: RegisterId,
         source: Operand,
@@ -239,6 +252,9 @@ pub enum Instruction {
         arguments: Vec<Operand>,
         destination: Option<RegisterId>,
     },
+    /// This is a temporary instruction which is really only meaningful on
+    /// x86_64-linux-* targets that we use to interact with the kernel while we
+    /// don't have inline assembly to use within stdlib functions
     Syscall {
         number: u64,
         arguments: Vec<Operand>,
