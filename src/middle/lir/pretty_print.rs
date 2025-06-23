@@ -69,10 +69,11 @@ impl core::fmt::Display for lir::Instruction {
                 index,
             } => write!(
                 f,
-                "{destination} {} {} {source}, {}, {index}",
+                "{destination} {} {} {source}, {}, {}",
                 "=".white(),
                 "get_struct_element_ptr".cyan(),
-                lir::Type::Struct(ty.clone())
+                lir::Type::Struct(ty.clone()),
+                index.to_string().purple()
             ),
             lir::Instruction::GetArrayElementPointer {
                 destination,
@@ -81,22 +82,10 @@ impl core::fmt::Display for lir::Instruction {
                 index,
             } => write!(
                 f,
-                "{destination} {} {} {source}, {ty}, {index}",
+                "{destination} {} {} {source}, {ty}, {}",
                 "=".white(),
-                "get_array_element_ptr".cyan()
-            ),
-
-            lir::Instruction::ExtractStructFieldValue {
-                destination,
-                source,
-                ty,
-                index,
-            } => write!(
-                f,
-                "{destination} {} {} {source}, {}, {index}",
-                "=".white(),
-                "extract_value".cyan(),
-                lir::Type::Struct(ty.clone())
+                "get_array_element_ptr".cyan(),
+                index.to_string().purple()
             ),
             lir::Instruction::Move {
                 destination,
@@ -163,7 +152,17 @@ impl core::fmt::Display for lir::Instruction {
                 arguments,
                 destination,
             } => {
-                todo!();
+                if let Some(dest) = destination {
+                    write!(f, "{dest} = ")?;
+                }
+                write!(
+                    f,
+                    "{} {target}({}",
+                    "call".cyan(),
+                    arguments.iter().map(|op| op.to_string()).join(", ").white()
+                )?;
+
+                write!(f, ")")
             }
             lir::Instruction::Syscall {
                 number,
@@ -225,9 +224,10 @@ impl core::fmt::Display for lir::Immediate {
             lir::Immediate::Int(value, _) => write!(f, "{value}"),
             lir::Immediate::Float(value, _) => write!(f, "{value}"),
             lir::Immediate::Bool(value) => write!(f, "{value}"),
-            lir::Immediate::StaticPointer(value) => {
+            lir::Immediate::StaticLabel(value) => {
                 write!(f, "__$static_alloc_{}", value.index())
             }
+            lir::Immediate::FunctionLabel(s) => write!(f, "{}", s.value()),
         }
     }
 }
@@ -266,7 +266,7 @@ impl core::fmt::Display for lir::Type {
             lir::Type::Struct(fields) => {
                 write!(f, "{{ ")?;
                 for (i, field) in fields.0.iter().enumerate() {
-                    write!(f, "{i}: {field}")?;
+                    write!(f, "{field}")?;
 
                     if i != fields.0.len() - 1 {
                         write!(f, ", ")?;

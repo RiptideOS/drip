@@ -38,6 +38,21 @@ pub struct FunctionDefinition {
     pub blocks: BTreeMap<BlockId, Block>,
 }
 
+impl FunctionDefinition {
+    pub fn type_of_operand(&self, operand: Operand) -> Type {
+        match operand {
+            Operand::Immediate(immediate) => match immediate {
+                Immediate::Int(_, integer_width) => Type::Integer(integer_width),
+                Immediate::Float(_, float_width) => Type::Float(float_width),
+                Immediate::Bool(_) => Type::Integer(IntegerWidth::I8),
+                Immediate::StaticLabel(_) => Type::Pointer,
+                Immediate::FunctionLabel(_) => Type::Pointer,
+            },
+            Operand::Register(register_id) => self.registers[&register_id].ty.clone(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Block {
     pub id: BlockId,
@@ -201,19 +216,6 @@ pub enum Instruction {
         /// Must be a valid index into the array (UB otherwise)
         index: usize,
     },
-    /// Loads the value of a field within a struct into the destination
-    /// register. This is a shortcut for `GetStructElementPointer` + `LoadMem`.
-    /// This operation requires that the size of the field is at most 8 bytes.
-    ExtractStructFieldValue {
-        /// Must be at most 8 bytes
-        destination: RegisterId,
-        /// Must be a pointer type
-        source: Operand,
-        /// The structure layout to use for the computation
-        ty: Struct,
-        /// Must be a valid index into the structure (Will panic otherwise)
-        index: usize,
-    },
     Move {
         destination: RegisterId,
         source: Operand,
@@ -248,7 +250,7 @@ pub enum Instruction {
         value: Option<Operand>,
     },
     FunctionCall {
-        target: RegisterId,
+        target: Operand,
         arguments: Vec<Operand>,
         destination: Option<RegisterId>,
     },
@@ -272,7 +274,8 @@ pub enum Immediate {
     Int(u64, IntegerWidth),
     Float(f64, FloatWidth),
     Bool(bool),
-    StaticPointer(StaticLabelId),
+    StaticLabel(StaticLabelId),
+    FunctionLabel(InternedSymbol),
 }
 
 simple_index! {
@@ -355,6 +358,28 @@ impl Struct {
             size: total_size,
             alignment: max_align,
         }
+    }
+
+    /// Returns the number of integer fields in this struct including those in
+    /// all recursive sub-fields
+    pub fn num_integer_fields(&self) -> usize {
+        self.0.iter().fold(0, |acc, ty| match ty {
+            Type::Integer(_) => acc + 1,
+            Type::Float(_) => acc,
+            Type::Pointer => acc + 1,
+            Type::Struct(s) => acc + s.num_integer_fields(),
+            Type::Array(_, _) => acc,
+        })
+    }
+
+    pub fn num_non_integer_fields(&self) -> usize {
+        self.0.iter().fold(0, |acc, ty| match ty {
+            Type::Integer(_) => acc,
+            Type::Float(_) => acc + 1,
+            Type::Pointer => acc,
+            Type::Struct(s) => acc + s.num_non_integer_fields(),
+            Type::Array(_, _) => acc + 1,
+        })
     }
 }
 

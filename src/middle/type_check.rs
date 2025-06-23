@@ -149,8 +149,30 @@ impl<'hir> TypeContext<'hir> {
     fn compute_hir_resolution_type(&mut self, resolution: hir::Resolution) -> Type {
         match resolution {
             hir::Resolution::Definition(_definition_kind, local_def_id) => {
-                let _owner = &self.module.owners[local_def_id];
-                todo!("compute user defined types")
+                let owner = &self.module.owners[local_def_id];
+
+                match owner.node() {
+                    hir::OwnerNode::Item(item) => match &item.kind {
+                        hir::ItemKind::Function { signature, .. } => {
+                            let parameters = signature
+                                .parameters
+                                .iter()
+                                .map(|ty| self.compute_hir_type(ty.clone()))
+                                .collect();
+                            let return_type = signature
+                                .return_type
+                                .as_ref()
+                                .map(|ty| self.compute_hir_type(ty.clone()))
+                                .unwrap_or_else(|| self.get_unit_type());
+
+                            self.intern_type(TypeKind::FunctionPointer {
+                                parameters,
+                                return_type,
+                                is_variadic: signature.variadic_type.is_some(),
+                            })
+                        }
+                    },
+                }
             }
             hir::Resolution::Primitive(primitive_kind) => self.get_primitive_type(primitive_kind),
             hir::Resolution::IntrinsicFunction(name) => match name.value() {

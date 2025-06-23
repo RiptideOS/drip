@@ -7,7 +7,7 @@ use crate::{
     backend::{CodegenOptions, target::CodeGenerator},
     frontend::ast::BinaryOperatorKind,
     index::Index,
-    middle::lir,
+    middle::lir::{self, Operand},
 };
 
 pub struct CodeGeneratorX86_64LinuxGnu;
@@ -49,16 +49,22 @@ impl CodeGenerator for CodeGeneratorX86_64LinuxGnu {
                 mov rax, 60
                 syscall
 
+            ; user code
             {0}
+
+            ; built-in functions
+            {1}
 
             ; static data
             section .data
             
             ; utf-8 strings
-            {1}
+            {2}
             "#
             },
-            function_bodies, static_strings
+            function_bodies,
+            include_str!("./x86_64-linux-gnu_core.s"),
+            static_strings
         )
     }
 
@@ -235,8 +241,8 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                     source,
                 } => {
                     load!(rax, source);
-                    load!(rbx, destination);
-                    emit!("    mov [rbx], rax");
+                    load!(rcx, destination);
+                    emit!("    mov [rcx], rax");
                 }
                 lir::Instruction::AllocStack { destination, ty } => {
                     emit!(
@@ -261,14 +267,6 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                     ty,
                     index,
                 } => todo!(),
-                lir::Instruction::ExtractStructFieldValue {
-                    destination,
-                    source,
-                    ty,
-                    index,
-                } => {
-                    todo!()
-                }
                 lir::Instruction::Move {
                     destination,
                     source,
@@ -295,7 +293,7 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                     rhs,
                 } => {
                     load!(rax, lhs);
-                    load!(rbx, rhs);
+                    load!(rcx, rhs);
 
                     // TODO: seprate into several instructions. group all
                     // sign-agnostic math instructions (and specify size) which
@@ -311,7 +309,7 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                         BinaryOperatorKind::Modulus => todo!(),
                         BinaryOperatorKind::Equals => {
                             // sete only works on 8-bit registers
-                            emit!("    cmp rax, rbx");
+                            emit!("    cmp rax, rcx");
                             emit!("    sete al");
                             store!([1] destination, al);
                         }
@@ -366,13 +364,175 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                 }
                 lir::Instruction::FunctionCall {
                     target,
-                    arguments: _,
+                    arguments,
                     destination,
                 } => {
-                    assert!(matches!(function.registers[target].ty, lir::Type::Pointer));
-                    assert_eq!(*destination, None, "return values not supported yet");
+                    assert!(matches!(
+                        function.type_of_operand(*target),
+                        lir::Type::Pointer
+                    ));
 
-                    todo!("define function call abi")
+                    // Depending on the types of the arguments, we need to determine how we move them into registers
+
+                    // First 6 integer arguments are passed in rdi, rsi, rdx, r10, r9, r8
+                    // All other arguments are passed on the stack for now.
+
+                    // Struct fields must be manually deconstructed in lowering
+                    // for optimizations like passing the fields of small
+                    // structs in registers.
+
+                    let mut register_arguments = Vec::with_capacity(6);
+                    let mut stack_arguments = Vec::new();
+
+                    for arg in arguments {
+                        match arg {
+                            lir::Operand::Immediate(_) => {
+                                if register_arguments.len() < 6 {
+                                    register_arguments.push(arg);
+                                } else {
+                                    stack_arguments.push(arg);
+                                }
+                            }
+                            lir::Operand::Register(register_id) => {
+                                let ty = &function.registers[register_id].ty;
+
+                                match ty {
+                                    lir::Type::Integer(_)
+                                    | lir::Type::Float(_)
+                                    | lir::Type::Pointer => {
+                                        if register_arguments.len() < 6 {
+                                            register_arguments.push(arg);
+                                        } else {
+                                            stack_arguments.push(arg);
+                                        }
+                                    }
+                                    lir::Type::Struct(_) | lir::Type::Array(_, _) => {
+                                        stack_arguments.push(arg)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    for (i, operand) in register_arguments.into_iter().enumerate() {
+                        const ARG_REGS: &[&str] = &["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
+
+                        let reg = ARG_REGS[i];
+                        match operand {
+                            lir::Operand::Immediate(lir::Immediate::Bool(value)) => {
+                                emit!("    mov {}, {}", reg, *value as u8);
+                            }
+                            lir::Operand::Immediate(lir::Immediate::Int(value, width)) => {
+                                // special handing for different integet sizes
+                                // to make sure we dont load too many bytes
+
+                                // FIXME: is this actually necessary since the
+                                // callee only cares about the lower bits
+                                // anyway?
+                                emit!("    xor rax, rax");
+                                let intermediate = match width {
+                                    lir::IntegerWidth::I8 => "al",
+                                    lir::IntegerWidth::I16 => "ax",
+                                    lir::IntegerWidth::I32 => "eax",
+                                    lir::IntegerWidth::I64 => "rax",
+                                };
+                                emit!("    mov {}, {}", intermediate, value);
+                                emit!("    mov {}, rax", reg);
+                            }
+                            lir::Operand::Immediate(
+                                imm @ (lir::Immediate::StaticLabel(_)
+                                | lir::Immediate::FunctionLabel(_)),
+                            ) => {
+                                emit!("    mov {}, {}", reg, imm);
+                            }
+                            lir::Operand::Immediate(lir::Immediate::Float(..)) => {
+                                todo!("xmm registers")
+                            }
+                            lir::Operand::Register(reg_id) => {
+                                let ty = &function.registers[reg_id].ty;
+
+                                match ty {
+                                    lir::Type::Integer(width) => {
+                                        // FIXME: same as above
+
+                                        emit!("    xor rax, rax");
+                                        let intermediate = match width {
+                                            lir::IntegerWidth::I8 => "al",
+                                            lir::IntegerWidth::I16 => "ax",
+                                            lir::IntegerWidth::I32 => "eax",
+                                            lir::IntegerWidth::I64 => "rax",
+                                        };
+                                        emit!(
+                                            "    mov {}, [rbp - {}]",
+                                            intermediate,
+                                            stack_frame_register_offset_map[reg_id]
+                                        );
+                                        emit!("    mov {}, rax", reg);
+                                    }
+                                    lir::Type::Pointer => {
+                                        emit!(
+                                            "    mov {}, [rbp - {}]",
+                                            reg,
+                                            stack_frame_register_offset_map[reg_id]
+                                        );
+                                    }
+                                    lir::Type::Float(_) => todo!("xmm registers"),
+                                    lir::Type::Struct(_) | lir::Type::Array(_, _) => unreachable!(),
+                                }
+                            }
+                        }
+                    }
+
+                    // TODO: reserve enough stack space for the stack arguments
+                    // (each one must be 8 byte aligned unless we figure out a
+                    // better way to handle smaller integer loading)
+
+                    for (i, arg) in stack_arguments.into_iter().enumerate() {
+                        // similar to above but need to push to the stack
+                        // instead + handle copying memory from our local stack
+                        // frame into the newly allocated region
+                        todo!("handle passing args on the stack")
+                    }
+
+                    match target {
+                        lir::Operand::Immediate(lir::Immediate::FunctionLabel(name)) => {
+                            emit!("    call {}", name.value());
+                        }
+                        _ => {
+                            load!(rax, target);
+                            emit!("    call rax");
+                        }
+                    }
+
+                    if let Some(dest) = destination {
+                        let ty = &function.registers[dest].ty;
+
+                        match ty {
+                            lir::Type::Integer(width) => {
+                                let reg = match width {
+                                    lir::IntegerWidth::I8 => "al",
+                                    lir::IntegerWidth::I16 => "ax",
+                                    lir::IntegerWidth::I32 => "eax",
+                                    lir::IntegerWidth::I64 => "rax",
+                                };
+                                emit!(
+                                    "    mov [rbp - {}], {}",
+                                    stack_frame_register_offset_map[dest],
+                                    reg
+                                );
+                            }
+                            lir::Type::Float(_) => todo!("xmm registers"),
+                            lir::Type::Pointer => {
+                                emit!(
+                                    "    mov [rbp - {}], rax",
+                                    stack_frame_register_offset_map[dest]
+                                );
+                            }
+                            lir::Type::Struct(_) | lir::Type::Array(_, _) => {
+                                todo!("allocate room on the stack for the return value")
+                            }
+                        }
+                    }
                 }
                 lir::Instruction::Syscall {
                     number,

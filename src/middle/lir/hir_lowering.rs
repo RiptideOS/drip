@@ -228,7 +228,7 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
                         self.static_strings.insert(id, *s);
                         self.push_instruction(lir::Instruction::StoreMem {
                             destination: lir::Operand::Register(pointer_element_ptr_reg),
-                            source: lir::Operand::Immediate(lir::Immediate::StaticPointer(id)),
+                            source: lir::Operand::Immediate(lir::Immediate::StaticLabel(id)),
                         });
 
                         /* Set the length field */
@@ -351,14 +351,15 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
                 let dest_reg =
                     self.create_register_with_lir_type(lir::Type::Integer(lir::IntegerWidth::I64));
 
-                self.push_instruction(lir::Instruction::Syscall {
-                    number: 1, // write
+                self.push_instruction(lir::Instruction::FunctionCall {
+                    target: lir::Operand::Immediate(lir::Immediate::FunctionLabel(
+                        InternedSymbol::new("__$print_str"),
+                    )),
                     arguments: vec![
-                        lir::Operand::Immediate(lir::Immediate::Int(1, lir::IntegerWidth::I64)),
                         lir::Operand::Register(ptr_reg),
                         lir::Operand::Register(len_reg),
                     ],
-                    destination: dest_reg,
+                    destination: Some(dest_reg),
                 });
 
                 self.expression_to_register_map
@@ -566,7 +567,7 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
 
     fn visit_path_segment(&mut self, segment: std::rc::Rc<hir::PathSegment>) {
         match &segment.resolution {
-            hir::Resolution::Definition(definition_kind, local_def_id) => todo!(),
+            hir::Resolution::Definition(definition_kind, local_def_id) => {}
             hir::Resolution::Local(local_id) => {
                 let reg = self.local_to_register_map[local_id];
                 self.expression_to_register_map
