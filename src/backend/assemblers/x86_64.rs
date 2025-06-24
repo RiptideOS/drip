@@ -130,7 +130,7 @@ impl<'a> Assembler<'a> {
             lir::Type::Struct(_) | lir::Type::Array(_, _) => unreachable!(),
             _ => {
                 self.emit(format!(
-                    "    mov [rbp - {}], {}",
+                    "mov [rbp - {}], {}",
                     self.stack_frame_register_offset_map[&destination], sized
                 ));
             }
