@@ -94,8 +94,8 @@
 
 pub mod hir;
 pub mod lir;
+pub mod optimization;
 pub mod primitive;
 pub mod resolve;
 pub mod ty;
 pub mod type_check;
-pub mod optimization;

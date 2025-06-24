@@ -68,7 +68,8 @@ pub fn codegen_module(
     // Create a temporary directory to work in
     let build_dir = fs::create_dir_all(DRIP_TMP_PATH)
         .and_then(|_| mktemp::Temp::new_dir_in(DRIP_TMP_PATH))
-        .map_err(|_| CodegenError::TemporaryDirectoryCreationFailure)?.release();
+        .map_err(|_| CodegenError::TemporaryDirectoryCreationFailure)?
+        .release();
 
     /* Step 1. Code Generation */
 
