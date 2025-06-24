@@ -65,7 +65,7 @@ fn evolve(initial_cells: *Int32Vec, generations: usize) {
 }
 
 fn main() {
-    let initial_cells = [0, 0, 0, 0, 1, 0, 0, 0, 0];
+    let initial_cells = Int32Vec::new(&[0, 0, 0, 0, 1, 0, 0, 0, 0]);
     let generations = 20;
 
     evolve(initial_cells, generations)
