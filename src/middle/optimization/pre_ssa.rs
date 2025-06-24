@@ -332,7 +332,7 @@ fn merge_blocks(function: &mut lir::FunctionDefinition) {
         }
 
         if evicted.contains(&block_id) {
-            break;
+            continue;
         }
 
         let lir::Instruction::Jump { destination } =
