@@ -317,7 +317,11 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                             assembler.store_operand(*destination, X86FullRegister::Rax);
                         }
                         BinaryOperatorKind::NotEquals => todo!(),
-                        BinaryOperatorKind::LessThan => todo!(),
+                        BinaryOperatorKind::LessThan => {
+                            assembler.emit(format!("cmp {lhs_sized_reg}, {rhs_sized_reg}"));
+                            assembler.emit("setl al");
+                            assembler.store_operand(*destination, X86FullRegister::Rax);
+                        },
                         BinaryOperatorKind::LessThanOrEqualTo => todo!(),
                         BinaryOperatorKind::GreaterThan => {
                             assembler.emit(format!("cmp {lhs_sized_reg}, {rhs_sized_reg}"));

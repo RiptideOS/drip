@@ -685,7 +685,78 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
                 self.block_stack.pop_back();
                 self.block_stack.push_back(merge_block_id);
             }
-            hir::ExpressionKind::While { condition, block } => todo!(),
+            hir::ExpressionKind::While { condition, block } => {
+                // .while_condition:
+                //     %0 = %i < %n
+                //     br %0 .while_body .while_end
+                // .while_body:
+                //     jmp .while_condition
+                // .while_end:
+
+                let current_block_id = *self.block_stack.back().unwrap();
+
+                let condition_block_id = self.create_block();
+                self.block_map[condition_block_id]
+                    .predecessors
+                    .insert(current_block_id);
+
+                // TODO: add continue predecessors to condition block
+
+                self.block_stack.push_back(condition_block_id);
+                self.visit_expression(condition.clone());
+                self.block_stack.pop_back();
+
+                let last_inserted_condition_block = lir::BlockId::new(self.block_map.len() - 1);
+
+                // Loop Body
+
+                let body_block_id = self.create_block();
+
+                self.block_stack.push_back(body_block_id);
+                self.visit_block(block.clone(), hir::visit::BlockContext::Loop);
+                self.block_stack.pop_back();
+
+                // At the end of the body, insert an unconditional jump back to
+                // the condition checking block
+
+                let last_inserted_body_block = lir::BlockId::new(self.block_map.len() - 1);
+
+                self.block_map[last_inserted_body_block].instructions.push(
+                    lir::Instruction::Jump {
+                        destination: condition_block_id,
+                    },
+                );
+                self.block_map[condition_block_id]
+                    .predecessors
+                    .insert(last_inserted_body_block);
+
+                // The end block is reached once the loop breaks or the
+                // condition returns false
+
+                let end_block_id = self.create_block();
+
+                // Conditional branch to decide if we continue the loop
+
+                let condition_reg = self.expression_to_register_map[&condition.hir_id.local_id];
+                self.block_map[last_inserted_condition_block]
+                    .instructions
+                    .push(lir::Instruction::Branch {
+                        condition: lir::Operand::Register(condition_reg),
+                        positive: body_block_id,
+                        negative: end_block_id,
+                    });
+                self.block_map[body_block_id]
+                    .predecessors
+                    .insert(last_inserted_condition_block);
+                self.block_map[end_block_id]
+                    .predecessors
+                    .insert(last_inserted_condition_block);
+
+                // TODO: add break predecessors to end block
+
+                self.block_stack.pop_back();
+                self.block_stack.push_back(end_block_id);
+            }
             hir::ExpressionKind::Assignment { lhs, rhs } => {
                 hir::visit::walk_expression(self, expression.clone());
 
@@ -745,6 +816,11 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
         hir::visit::walk_block(self, block.clone());
 
         if let Some(e) = &block.expression {
+            let ty = self.type_map.get_type(e.hir_id);
+            if ty.is_unit() || ty.is_never() {
+                return;
+            }
+
             let reg = self.expression_to_register_map[&e.hir_id.local_id];
 
             self.expression_to_register_map
