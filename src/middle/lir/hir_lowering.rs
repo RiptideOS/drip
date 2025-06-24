@@ -653,6 +653,11 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
                 } else {
                     // in this case the negative fallthrough is the same as the
                     // merge block id
+
+                    self.block_map[merge_block_id]
+                        .predecessors
+                        .insert(current_block_id);
+
                     merge_block_id
                 };
 
