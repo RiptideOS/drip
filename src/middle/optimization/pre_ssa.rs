@@ -232,6 +232,11 @@ fn propagate_constants(function: &mut lir::FunctionDefinition) {
                             // integers will just be truncated automatically
                             lir::Immediate::Int(lhs.wrapping_add(*rhs), *lhs_width)
                         }
+                        BinaryOperatorKind::Subtract => {
+                            // overflows are handled because any smaller
+                            // integers will just be truncated automatically
+                            lir::Immediate::Int(lhs.wrapping_sub(*rhs), *lhs_width)
+                        }
                         BinaryOperatorKind::Multiply => {
                             // overflows are handled because any smaller
                             // integers will just be truncated automatically
