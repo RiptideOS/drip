@@ -156,6 +156,13 @@ impl Node {
             _ => None,
         }
     }
+
+    pub fn as_let_statement(&self) -> Option<Rc<LetStatement>> {
+        match self {
+            Node::LetStatement(let_stmt) => Some(let_stmt.clone()),
+            _ => None,
+        }
+    }
 }
 
 /// Represents an HIR node that can be a top level owner

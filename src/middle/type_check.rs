@@ -282,6 +282,8 @@ impl<'hir> TypeContext<'hir> {
             TypeErrorKind::InvalidCast { from, to } => format!("non-trivial cast from {from} to {to}"),
             TypeErrorKind::TupleLengthMismatch { expected, actual } => format!("tuples have different arity, expected {expected} parameters but found {actual}"),
              TypeErrorKind::ArrayLengthMismatch { expected, actual } => format!("arrays have different length, expected {expected} parameters but found {actual}"),
+            TypeErrorKind::IllegalMutation => "cannot mutate immutable variable".to_string(),
+            TypeErrorKind::InvalidAssignment => "invalid left-hand side of assignment".to_string(),
         };
 
         eprintln!(
@@ -1002,6 +1004,10 @@ enum TypeErrorKind {
     TupleLengthMismatch { expected: usize, actual: usize },
     /// Arrays that should compare equal need to be of the same length
     ArrayLengthMismatch { expected: usize, actual: usize },
+    /// Only mutable values can be mutated
+    IllegalMutation,
+    /// Only certain types of values may be on the lhs of an assignment
+    InvalidAssignment,
 }
 
 impl TypeErrorKind {
@@ -1016,7 +1022,9 @@ impl TypeErrorKind {
             | TypeErrorKind::IllegalLoopControlFlow(_)
             | TypeErrorKind::InvalidCast { .. }
             | TypeErrorKind::TupleLengthMismatch { .. }
-            | TypeErrorKind::ArrayLengthMismatch { .. } => vec![],
+            | TypeErrorKind::ArrayLengthMismatch { .. }
+            | TypeErrorKind::IllegalMutation
+            | TypeErrorKind::InvalidAssignment => vec![],
         }
     }
 }
@@ -1595,6 +1603,44 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                 self.insert_type(expression.hir_id, unit_ty);
             }
             hir::ExpressionKind::Assignment { lhs, rhs } => {
+                let mut error = None;
+
+                match &lhs.kind {
+                    hir::ExpressionKind::Path(path) => match path.resolution() {
+                        hir::Resolution::Local(id) => {
+                            let local = self.type_context.module.get_owner(self.owner_id).nodes
+                                [*id]
+                                .node
+                                .as_let_statement()
+                                .unwrap();
+
+                            if !local.is_mutable {
+                                error = Some(TypeErrorKind::IllegalMutation)
+                            }
+                        }
+                        _ => error = Some(TypeErrorKind::InvalidAssignment),
+                    },
+                    hir::ExpressionKind::Unary {
+                        operator: UnaryOperatorKind::Deref,
+                        ..
+                    } => todo!("check if deref can be mutated"),
+                    _ => error = Some(TypeErrorKind::InvalidAssignment),
+                }
+
+                if let Some(kind) = error {
+                    self.errors.push(TypeError {
+                        origin: TypeConstraintOrigin {
+                            span: lhs.span,
+                            kind: TypeBoundary::Assignment,
+                        },
+                        kind,
+                    });
+
+                    let error_ty = self.type_context.get_error_type();
+                    self.insert_type(expression.hir_id, error_ty);
+                    return;
+                }
+
                 let lhs_ty = self.get_type(lhs.hir_id);
                 let rhs_ty = self.get_type(rhs.hir_id);
                 let unit_ty = self.type_context.get_unit_type();
