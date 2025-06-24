@@ -260,7 +260,10 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                             assembler.emit("sete cl");
                             assembler.store_operand(*destination, X86FullRegister::Rcx);
                         }
-                        UnaryOperatorKind::BitwiseNot => todo!(),
+                        UnaryOperatorKind::BitwiseNot => {
+                            assembler.emit(format!("not {sized_reg}"));
+                            assembler.store_operand(*destination, X86FullRegister::Rax);
+                        }
                         UnaryOperatorKind::Negate => {
                             assembler.emit(format!("neg {sized_reg}"));
                             assembler.store_operand(*destination, X86FullRegister::Rax);
@@ -296,7 +299,12 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                             assembler.emit(format!("imul {lhs_sized_reg}, {rhs_sized_reg}"));
                             assembler.store_operand(*destination, X86FullRegister::Rax);
                         }
-                        BinaryOperatorKind::Divide => todo!(),
+                        BinaryOperatorKind::Divide => {
+                            // TODO: signed vs unsigned div
+                            assembler.emit("cqo");
+                            assembler.emit(format!("idiv {rhs_sized_reg}"));
+                            assembler.store_operand(*destination, X86FullRegister::Rax);
+                        }
                         BinaryOperatorKind::Modulus => {
                             // TODO: signed vs unsigned div
                             assembler.emit("cqo");
