@@ -199,17 +199,29 @@ fn propagate_constants(function: &mut lir::FunctionDefinition) {
                     }
                 }
                 lir::Instruction::Return { value: Some(value) } => {
-                    if let lir::Operand::Register(s) = *value {
+                    if let lir::Operand::Register(v) = *value {
                         constant_map
-                            .get(&s)
+                            .get(&v)
                             .inspect(|imm| *value = lir::Operand::Immediate(**imm));
                     }
                 }
                 lir::Instruction::FunctionCall {
-                    target,
-                    arguments,
-                    destination,
-                } => todo!(),
+                    target, arguments, ..
+                } => {
+                    if let lir::Operand::Register(v) = *target {
+                        constant_map
+                            .get(&v)
+                            .inspect(|imm| *target = lir::Operand::Immediate(**imm));
+                    }
+
+                    for arg in arguments {
+                        if let lir::Operand::Register(v) = *arg {
+                            constant_map
+                                .get(&v)
+                                .inspect(|imm| *arg = lir::Operand::Immediate(**imm));
+                        }
+                    }
+                }
                 _ => {}
             }
         }
