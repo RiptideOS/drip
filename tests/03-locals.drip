@@ -1,15 +1,8 @@
 fn main() {
-    let a = 1;
+    let a: i64 = 1;
     let b = 2;
     let c = 3;
-
-    u32 a = 1;
-
     let d = 4;
 
-    println("Output: {}", a + b * c as i64);
-
-    let garbage_collected: &[i32] = new i32[100];
-
-    let not_gced: *i32 = calloc(i32, 100);
+    print("Output: {}\n", a + b * c - d);
 }

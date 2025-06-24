@@ -1354,7 +1354,7 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                     }
                     // If this is a logical operator, require that both types
                     // are bools
-                    class @ (BinaryOperatorClass::Logical | BinaryOperatorClass::Equality) => {
+                    class @ (BinaryOperatorClass::Logical | BinaryOperatorClass::Comparison) => {
                         let bool_ty = self.type_context.get_primitive_type(PrimitiveKind::Bool);
 
                         // should this be a type constraint? maybe but it seems

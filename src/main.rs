@@ -8,7 +8,7 @@ use std::{
 use clap::{CommandFactory, Parser as ClapParser, error::ErrorKind};
 
 use crate::{
-    backend::{CodegenOptions, OutputKind, codegen_module, target::Target},
+    backend::{CodegenOptions, OutputKind, codegen_module, targets::Target},
     frontend::{SourceFile, SourceFileOrigin, parser::Parser},
     middle::{
         hir::ast_lowering::lower_to_hir,

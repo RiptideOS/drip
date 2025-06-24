@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, path::Path, process::Command};
 use itertools::Itertools;
 
 use crate::{
-    backend::{CodegenOptions, target::CodeGenerator},
+    backend::{CodegenOptions, targets::CodeGenerator},
     frontend::ast::{BinaryOperatorKind, UnaryOperatorKind},
     index::Index,
     middle::lir,
@@ -310,7 +310,10 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                             store!([1] destination, cl);
                         }
                         UnaryOperatorKind::BitwiseNot => todo!(),
-                        UnaryOperatorKind::Negate => todo!(),
+                        UnaryOperatorKind::Negate => {
+                            emit!("    neg rax");
+                            store!(destination, rax);
+                        }
                     }
                 }
                 lir::Instruction::BinaryOperation {
@@ -329,9 +332,20 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                     // specified size)
 
                     match operator {
-                        BinaryOperatorKind::Add => todo!(),
-                        BinaryOperatorKind::Subtract => todo!(),
-                        BinaryOperatorKind::Multiply => todo!(),
+                        BinaryOperatorKind::Add => {
+                            emit!("    add rax, rcx");
+                            store!(destination, rax);
+                        }
+                        BinaryOperatorKind::Subtract => {
+                            emit!("    sub rax, rcx");
+                            store!(destination, rax);
+                        }
+                        BinaryOperatorKind::Multiply => {
+                            // TODO: signed vs unsigned mul
+                            // TODO: operand sizes
+                            emit!("    imul rax, rcx");
+                            store!(destination, rax);
+                        }
                         BinaryOperatorKind::Divide => todo!(),
                         BinaryOperatorKind::Modulus => {
                             // TODO: signed vs unsigned div
@@ -349,7 +363,11 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                         BinaryOperatorKind::NotEquals => todo!(),
                         BinaryOperatorKind::LessThan => todo!(),
                         BinaryOperatorKind::LessThanOrEqualTo => todo!(),
-                        BinaryOperatorKind::GreaterThan => todo!(),
+                        BinaryOperatorKind::GreaterThan => {
+                            emit!("    cmp rax, rcx");
+                            emit!("    setg al");
+                            store!([1] destination, al);
+                        }
                         BinaryOperatorKind::GreaterThanOrEqualTo => todo!(),
                         BinaryOperatorKind::LogicalAnd => todo!(),
                         BinaryOperatorKind::LogicalOr => todo!(),

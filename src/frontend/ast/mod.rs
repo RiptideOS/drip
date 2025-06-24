@@ -254,7 +254,7 @@ pub enum BinaryOperatorKind {
 pub enum BinaryOperatorClass {
     Arithmetic,
     Logical,
-    Equality,
+    Comparison,
 }
 
 impl BinaryOperatorKind {
@@ -265,17 +265,18 @@ impl BinaryOperatorKind {
             | Self::Multiply
             | Self::Divide
             | Self::Modulus
-            | Self::LessThan
-            | Self::LessThanOrEqualTo
-            | Self::GreaterThan
-            | Self::GreaterThanOrEqualTo
             | Self::BitwiseAnd
             | Self::BitwiseOr
             | Self::BitwiseXor
             | Self::ShiftLeft
             | Self::ShiftRight => BinaryOperatorClass::Arithmetic,
             Self::LogicalAnd | Self::LogicalOr => BinaryOperatorClass::Logical,
-            Self::Equals | Self::NotEquals => BinaryOperatorClass::Equality,
+            Self::Equals
+            | Self::NotEquals
+            | Self::LessThan
+            | Self::LessThanOrEqualTo
+            | Self::GreaterThan
+            | Self::GreaterThanOrEqualTo => BinaryOperatorClass::Comparison,
         }
     }
 }

@@ -1,14 +1,15 @@
 fn main() {
-    let b = 2;
+    let a = 2;
     let one = {
-        let a = -1;
+        let b = -1;
         a + b
     };
-    println("Result: {}", add(one + 1 as i64, 2));
+    
+    print("Result: {}\n", max(add(one + 1, 2), 1));
 }
 
 fn add(a: i64, b: i64) -> i64 {
-    a + b + 1
+    a + b 
 }
 
 fn max(a: i64, b: i64) -> i64 {

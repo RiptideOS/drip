@@ -735,6 +735,17 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
             | hir::Resolution::Primitive(..) => {}
         }
     }
+
+    fn visit_block(&mut self, block: Rc<hir::Block>, _context: hir::visit::BlockContext) {
+        hir::visit::walk_block(self, block.clone());
+
+        if let Some(e) = &block.expression {
+            let reg = self.expression_to_register_map[&e.hir_id.local_id];
+
+            self.expression_to_register_map
+                .insert(block.hir_id.local_id, reg);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

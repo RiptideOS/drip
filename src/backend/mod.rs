@@ -8,11 +8,12 @@ use std::{fs, io::BufRead, path::Path};
 use itertools::Itertools;
 
 use crate::{
-    backend::target::{CodeGenerator, Target},
+    backend::targets::{CodeGenerator, Target},
     middle::lir,
 };
 
-pub mod target;
+pub mod assemblers;
+pub mod targets;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum OutputKind {
