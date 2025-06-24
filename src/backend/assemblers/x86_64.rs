@@ -35,12 +35,12 @@ impl<'a> Assembler<'a> {
     }
 
     pub fn global_label(&mut self, name: &str) {
-        self.emit(format!("global {name}"));
-        self.emit(format!("{name}:"));
+        self.push_line(format!("global {name}"));
+        self.push_line(format!("{name}:"));
     }
 
     pub fn label(&mut self, name: impl AsRef<str>) {
-        self.emit(format!("{}:", name.as_ref()));
+        self.push_line(format!("{}:", name.as_ref()));
     }
 
     pub fn comment(&mut self, comment: impl AsRef<str>) {
