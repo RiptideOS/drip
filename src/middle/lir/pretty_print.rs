@@ -164,19 +164,6 @@ impl core::fmt::Display for lir::Instruction {
 
                 write!(f, ")")
             }
-            lir::Instruction::Syscall {
-                number,
-                arguments,
-                destination,
-            } => {
-                write!(f, "{destination} = {} {number}, ", "syscall".cyan())?;
-
-                write!(
-                    f,
-                    "{}",
-                    arguments.iter().map(|op| op.to_string()).join(", ").white()
-                )
-            }
             lir::Instruction::Phi {
                 destination,
                 sources,

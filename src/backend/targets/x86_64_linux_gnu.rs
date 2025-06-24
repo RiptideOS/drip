@@ -1,10 +1,13 @@
-use core::fmt::Write;
 use std::{collections::BTreeMap, path::Path, process::Command};
 
 use itertools::Itertools;
 
 use crate::{
-    backend::{CodegenOptions, targets::CodeGenerator},
+    backend::{
+        CodegenOptions,
+        assemblers::x86_64::{Assembler, X86FullRegister},
+        targets::CodeGenerator,
+    },
     frontend::ast::{BinaryOperatorKind, UnaryOperatorKind},
     index::Index,
     middle::lir,
@@ -139,7 +142,14 @@ fn format_nasm_string(string: &str) -> String {
 }
 
 fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions) -> String {
-    const ARG_REGS: &[&str] = &["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
+    const ARG_REGS: &[X86FullRegister] = &[
+        X86FullRegister::Rdi,
+        X86FullRegister::Rsi,
+        X86FullRegister::Rdx,
+        X86FullRegister::Rcx,
+        X86FullRegister::R8,
+        X86FullRegister::R9,
+    ];
 
     let mut stack_frame_register_offset_map = BTreeMap::new();
     let mut stack_frame_size = 0;
@@ -154,114 +164,55 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
 
     /* Assembly output */
 
-    let mut output = String::new();
+    let mut assembler = Assembler::new(function, &stack_frame_register_offset_map);
 
-    macro_rules! emit {
-        ($($arg:tt)*) => {
-            writeln!(&mut output, $($arg)*).unwrap();
-        };
-    }
-
-    emit!("global {}", function.symbol_name.value());
-    emit!("{}:", function.symbol_name.value());
-
-    /* Function Prologue */
-
-    emit!("    push rbp");
-    emit!("    mov rbp, rsp");
-    emit!("    sub rsp, {stack_frame_size}");
-
-    macro_rules! load {
-        ($register:ident, $operand:expr) => {
-            match $operand {
-                lir::Operand::Immediate(lir::Immediate::Bool(value)) => {
-                    emit!("    mov {}, {}", stringify!($register), *value as u8);
-                }
-                lir::Operand::Immediate(immediate) => {
-                    emit!("    mov {}, {}", stringify!($register), immediate);
-                }
-                lir::Operand::Register(reg) => {
-                    emit!(
-                        "    mov {}, [rbp - {}]",
-                        stringify!($register),
-                        stack_frame_register_offset_map[reg]
-                    );
-                }
-            }
-        };
-    }
-
-    macro_rules! store {
-        ($dest:expr, $src:ident) => {
-            emit!(
-                "    mov [rbp - {}], {}",
-                stack_frame_register_offset_map[$dest],
-                stringify!($src),
-            );
-        };
-        ([$size:expr] $dest:expr, $src:ident) => {
-            emit!(
-                "    mov {} [rbp - {}], {}",
-                match $size {
-                    1 => "byte",
-                    2 => "word",
-                    4 => "dword",
-                    8 => "qword",
-                    _ => unreachable!(),
-                },
-                stack_frame_register_offset_map[$dest],
-                stringify!($src),
-            );
-        };
-    }
+    assembler.global_label(function.symbol_name.value());
+    assembler.function_prologue(stack_frame_size);
 
     /* Move the function arguments into the stack registers */
 
     for (i, arg) in function.arguments.iter().enumerate() {
-        emit!(
-            "    ; store arg {} into its stack register",
+        assembler.emit(format!(
+            "; store arg {} into its stack register",
             strip_ansi_escapes::strip_str(arg.to_string())
-        );
-        emit!(
-            "    mov [rbp - {}], {}",
-            stack_frame_register_offset_map[arg],
-            ARG_REGS[i],
-        );
+        ));
+        assembler.emit(format!(
+            "mov [rbp - {}], {}",
+            stack_frame_register_offset_map[arg], ARG_REGS[i],
+        ));
     }
 
     /* Intermediate Blocks */
+
     for block in function.blocks.values() {
-        emit!("{}:", block.id);
+        assembler.label(block.id.to_string());
 
         for instruction in block.instructions.iter() {
-            emit!(
-                "    ; {}",
-                strip_ansi_escapes::strip_str(instruction.to_string())
-            );
+            assembler.comment(strip_ansi_escapes::strip_str(instruction.to_string()));
 
             match instruction {
                 lir::Instruction::LoadMem {
                     destination,
                     source,
                 } => {
-                    load!(rax, source);
-                    emit!("    mov rax, [rax]");
-                    store!(destination, rax);
+                    let sized_reg = assembler.load_operand(X86FullRegister::Rax, *source);
+                    assembler.emit(format!("mov {sized_reg}, [{sized_reg}]"));
+                    assembler.store_operand(*destination, X86FullRegister::Rax);
                 }
                 lir::Instruction::StoreMem {
                     destination,
                     source,
                 } => {
-                    load!(rax, source);
-                    load!(rcx, destination);
-                    emit!("    mov [rcx], rax");
+                    let sized_reg = assembler.load_operand(X86FullRegister::Rax, *source);
+                    assembler.load_operand(X86FullRegister::Rcx, *destination);
+                    assembler.emit(format!("mov [rcx], {sized_reg}"));
                 }
                 lir::Instruction::AllocStack { destination, ty } => {
-                    emit!(
-                        "    sub rsp, {}",
+                    assembler.emit(format!(
+                        "sub rsp, {}",
                         lir::align_to(ty.layout().size, ty.layout().alignment)
-                    );
-                    store!(destination, rsp);
+                    ));
+                    assembler.store_operand(*destination, X86FullRegister::Rsp);
                 }
                 lir::Instruction::GetStructElementPointer {
                     destination,
@@ -269,9 +220,9 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                     ty,
                     index,
                 } => {
-                    load!(rax, source);
-                    emit!("    lea rax, [rax + {}]", ty.offset_of(*index));
-                    store!(destination, rax);
+                    assembler.load_operand(X86FullRegister::Rax, *source);
+                    assembler.emit(format!("lea rax, [rax + {}]", ty.offset_of(*index)));
+                    assembler.store_operand(*destination, X86FullRegister::Rax);
                 }
                 lir::Instruction::GetArrayElementPointer {
                     destination,
@@ -283,8 +234,8 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                     destination,
                     source,
                 } => {
-                    load!(rax, source);
-                    store!(destination, rax);
+                    assembler.load_operand(X86FullRegister::Rax, *source);
+                    assembler.store_operand(*destination, X86FullRegister::Rax);
                 }
                 lir::Instruction::IntegerCast {
                     kind,
@@ -298,21 +249,21 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                     destination,
                     operand,
                 } => {
-                    load!(rax, operand);
+                    let sized_reg = assembler.load_operand(X86FullRegister::Rax, *operand);
 
                     match operator {
                         UnaryOperatorKind::Deref => todo!(),
                         UnaryOperatorKind::AddressOf => todo!(),
                         UnaryOperatorKind::LogicalNot => {
-                            emit!("    cmp rcx, rcx");
-                            emit!("    test rax, rax");
-                            emit!("    sete cl");
-                            store!([1] destination, cl);
+                            assembler.emit("xor rcx, rcx"); // FIXME: necessary?
+                            assembler.emit(format!("test {sized_reg}, {sized_reg}"));
+                            assembler.emit("sete cl");
+                            assembler.store_operand(*destination, X86FullRegister::Rcx);
                         }
                         UnaryOperatorKind::BitwiseNot => todo!(),
                         UnaryOperatorKind::Negate => {
-                            emit!("    neg rax");
-                            store!(destination, rax);
+                            assembler.emit(format!("neg {sized_reg}"));
+                            assembler.store_operand(*destination, X86FullRegister::Rax);
                         }
                     }
                 }
@@ -322,8 +273,8 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                     lhs,
                     rhs,
                 } => {
-                    load!(rax, lhs);
-                    load!(rcx, rhs);
+                    let lhs_sized_reg = assembler.load_operand(X86FullRegister::Rax, *lhs);
+                    let rhs_sized_reg = assembler.load_operand(X86FullRegister::Rcx, *rhs);
 
                     // TODO: seprate into several instructions. group all
                     // sign-agnostic math instructions (and specify size) which
@@ -333,40 +284,37 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
 
                     match operator {
                         BinaryOperatorKind::Add => {
-                            emit!("    add rax, rcx");
-                            store!(destination, rax);
+                            assembler.emit(format!("add {lhs_sized_reg}, {rhs_sized_reg}"));
+                            assembler.store_operand(*destination, X86FullRegister::Rax);
                         }
                         BinaryOperatorKind::Subtract => {
-                            emit!("    sub rax, rcx");
-                            store!(destination, rax);
+                            assembler.emit(format!("sub {lhs_sized_reg}, {rhs_sized_reg}"));
+                            assembler.store_operand(*destination, X86FullRegister::Rax);
                         }
                         BinaryOperatorKind::Multiply => {
                             // TODO: signed vs unsigned mul
-                            // TODO: operand sizes
-                            emit!("    imul rax, rcx");
-                            store!(destination, rax);
+                            assembler.emit(format!("imul {lhs_sized_reg}, {rhs_sized_reg}"));
+                            assembler.store_operand(*destination, X86FullRegister::Rax);
                         }
                         BinaryOperatorKind::Divide => todo!(),
                         BinaryOperatorKind::Modulus => {
                             // TODO: signed vs unsigned div
-                            // TODO: operand sizes
-                            emit!("    cqo");
-                            emit!("    idiv rcx");
-                            store!(destination, rdx);
+                            assembler.emit("cqo");
+                            assembler.emit(format!("idiv {rhs_sized_reg}"));
+                            assembler.store_operand(*destination, X86FullRegister::Rdx);
                         }
                         BinaryOperatorKind::Equals => {
-                            // sete only works on 8-bit registers
-                            emit!("    cmp rax, rcx");
-                            emit!("    sete al");
-                            store!([1] destination, al);
+                            assembler.emit(format!("cmp {lhs_sized_reg}, {rhs_sized_reg}"));
+                            assembler.emit("sete al");
+                            assembler.store_operand(*destination, X86FullRegister::Rax);
                         }
                         BinaryOperatorKind::NotEquals => todo!(),
                         BinaryOperatorKind::LessThan => todo!(),
                         BinaryOperatorKind::LessThanOrEqualTo => todo!(),
                         BinaryOperatorKind::GreaterThan => {
-                            emit!("    cmp rax, rcx");
-                            emit!("    setg al");
-                            store!([1] destination, al);
+                            assembler.emit(format!("cmp {lhs_sized_reg}, {rhs_sized_reg}"));
+                            assembler.emit("setg al");
+                            assembler.store_operand(*destination, X86FullRegister::Rax);
                         }
                         BinaryOperatorKind::GreaterThanOrEqualTo => todo!(),
                         BinaryOperatorKind::LogicalAnd => todo!(),
@@ -395,23 +343,24 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                         }
                     }
 
-                    load!(al, condition);
-                    emit!("    test al, al");
-                    emit!("    jnz {positive}");
-                    emit!("    jmp {negative}");
+                    assembler.load_operand(X86FullRegister::Rax, *condition);
+
+                    assembler.emit("test al, al");
+                    assembler.emit(format!("jnz {positive}"));
+                    assembler.emit(format!("jmp {negative}"));
                 }
                 lir::Instruction::Jump { destination } => {
-                    emit!("    jmp {destination}");
+                    assembler.emit(format!("jmp {destination}"));
                 }
                 lir::Instruction::Return { value } => {
                     // TODO: dont emit jmp if we are in the last block?
 
                     // load return value into rax
                     if let Some(v) = value {
-                        load!(rax, v);
+                        assembler.load_operand(X86FullRegister::Rax, *v);
                     }
 
-                    emit!("    jmp .exit");
+                    assembler.emit("jmp .exit");
                 }
                 lir::Instruction::FunctionCall {
                     target,
@@ -466,70 +415,7 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                     }
 
                     for (i, operand) in register_arguments.into_iter().enumerate() {
-                        let reg = ARG_REGS[i];
-                        match operand {
-                            lir::Operand::Immediate(lir::Immediate::Bool(value)) => {
-                                emit!("    mov {}, {}", reg, *value as u8);
-                            }
-                            lir::Operand::Immediate(lir::Immediate::Int(value, width)) => {
-                                // special handing for different integet sizes
-                                // to make sure we dont load too many bytes
-
-                                // FIXME: is this actually necessary since the
-                                // callee only cares about the lower bits
-                                // anyway?
-                                emit!("    xor rax, rax");
-                                let intermediate = match width {
-                                    lir::IntegerWidth::I8 => "al",
-                                    lir::IntegerWidth::I16 => "ax",
-                                    lir::IntegerWidth::I32 => "eax",
-                                    lir::IntegerWidth::I64 => "rax",
-                                };
-                                emit!("    mov {}, {}", intermediate, value);
-                                emit!("    mov {}, rax", reg);
-                            }
-                            lir::Operand::Immediate(
-                                imm @ (lir::Immediate::StaticLabel(_)
-                                | lir::Immediate::FunctionLabel(_)),
-                            ) => {
-                                emit!("    mov {}, {}", reg, imm);
-                            }
-                            lir::Operand::Immediate(lir::Immediate::Float(..)) => {
-                                todo!("xmm registers")
-                            }
-                            lir::Operand::Register(reg_id) => {
-                                let ty = &function.registers[reg_id].ty;
-
-                                match ty {
-                                    lir::Type::Integer(width) => {
-                                        // FIXME: same as above
-
-                                        emit!("    xor rax, rax");
-                                        let intermediate = match width {
-                                            lir::IntegerWidth::I8 => "al",
-                                            lir::IntegerWidth::I16 => "ax",
-                                            lir::IntegerWidth::I32 => "eax",
-                                            lir::IntegerWidth::I64 => "rax",
-                                        };
-                                        emit!(
-                                            "    mov {}, [rbp - {}]",
-                                            intermediate,
-                                            stack_frame_register_offset_map[reg_id]
-                                        );
-                                        emit!("    mov {}, rax", reg);
-                                    }
-                                    lir::Type::Pointer => {
-                                        emit!(
-                                            "    mov {}, [rbp - {}]",
-                                            reg,
-                                            stack_frame_register_offset_map[reg_id]
-                                        );
-                                    }
-                                    lir::Type::Float(_) => todo!("xmm registers"),
-                                    lir::Type::Struct(_) | lir::Type::Array(_, _) => unreachable!(),
-                                }
-                            }
-                        }
+                        assembler.load_operand(ARG_REGS[i], *operand);
                     }
 
                     // TODO: reserve enough stack space for the stack arguments
@@ -545,77 +431,30 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
 
                     match target {
                         lir::Operand::Immediate(lir::Immediate::FunctionLabel(name)) => {
-                            emit!("    call {}", name.value());
+                            assembler.emit(format!("call {}", name.value()));
                         }
                         _ => {
-                            load!(rax, target);
-                            emit!("    call rax");
+                            assembler.load_operand(X86FullRegister::Rax, *target);
+                            assembler.emit("call rax");
                         }
                     }
 
                     if let Some(dest) = destination {
-                        let ty = &function.registers[dest].ty;
-
-                        match ty {
-                            lir::Type::Integer(width) => {
-                                let reg = match width {
-                                    lir::IntegerWidth::I8 => "al",
-                                    lir::IntegerWidth::I16 => "ax",
-                                    lir::IntegerWidth::I32 => "eax",
-                                    lir::IntegerWidth::I64 => "rax",
-                                };
-                                emit!(
-                                    "    mov [rbp - {}], {}",
-                                    stack_frame_register_offset_map[dest],
-                                    reg
-                                );
-                            }
-                            lir::Type::Float(_) => todo!("xmm registers"),
-                            lir::Type::Pointer => {
-                                emit!(
-                                    "    mov [rbp - {}], rax",
-                                    stack_frame_register_offset_map[dest]
-                                );
-                            }
-                            lir::Type::Struct(_) | lir::Type::Array(_, _) => {
-                                todo!("allocate room on the stack for the return value")
-                            }
-                        }
+                        assembler.store_operand(*dest, X86FullRegister::Rax);
                     }
-                }
-                lir::Instruction::Syscall {
-                    number,
-                    arguments,
-                    destination,
-                } => {
-                    assert_eq!(arguments.len(), 3);
-
-                    emit!("    mov rax, {}", number);
-                    load!(rdi, &arguments[0]);
-                    load!(rsi, &arguments[1]);
-                    load!(rdx, &arguments[2]);
-                    emit!("    syscall");
-
-                    store!(destination, rax);
                 }
                 lir::Instruction::Phi { .. } => {
                     unreachable!("phi instructions should be eliminated before codegen")
                 }
                 lir::Instruction::Comment(text) => {
                     if options.emit_debug_info {
-                        emit!("    ; {text}");
+                        assembler.comment(text);
                     }
                 }
             }
         }
     }
 
-    /* Function Epilogue */
-
-    emit!(".exit:");
-    emit!("    mov rsp, rbp");
-    emit!("    pop rbp");
-    emit!("    ret");
-
-    output
+    assembler.function_epilogue();
+    assembler.into_output()
 }

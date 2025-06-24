@@ -254,14 +254,6 @@ pub enum Instruction {
         arguments: Vec<Operand>,
         destination: Option<RegisterId>,
     },
-    /// This is a temporary instruction which is really only meaningful on
-    /// x86_64-linux-* targets that we use to interact with the kernel while we
-    /// don't have inline assembly to use within stdlib functions
-    Syscall {
-        number: u64,
-        arguments: Vec<Operand>,
-        destination: RegisterId,
-    },
     Phi {
         destination: RegisterId,
         sources: BTreeMap<BlockId, RegisterId>,
