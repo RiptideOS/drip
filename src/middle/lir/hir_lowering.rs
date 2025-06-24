@@ -478,9 +478,9 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
                                     let ty = self.type_map.get_type(arg.hir_id);
 
                                     match &*ty {
-                                        ty::TypeKind::Integer(IntKind::I64) => {
+                                        ty::TypeKind::Integer(int_kind) => {
                                             let dest_reg = self.create_register_with_lir_type(
-                                                lir::Type::Integer(lir::IntegerWidth::I64),
+                                                lir::Type::Integer((*int_kind).into()),
                                             );
 
                                             self.push_instruction(lir::Instruction::FunctionCall {
