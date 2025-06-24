@@ -5,15 +5,16 @@ use itertools::Itertools;
 
 use crate::{
     backend::{CodegenOptions, target::CodeGenerator},
-    frontend::ast::BinaryOperatorKind,
+    frontend::ast::{BinaryOperatorKind, UnaryOperatorKind},
     index::Index,
-    middle::lir::{self, Operand},
+    middle::lir,
 };
 
 pub struct CodeGeneratorX86_64LinuxGnu;
 
 impl CodeGenerator for CodeGeneratorX86_64LinuxGnu {
     fn translate_to_asm(&self, module: &lir::Module, options: &CodegenOptions) -> String {
+        // TODO: remove unused static labels
         let static_strings = module
             .static_strings
             .iter()
@@ -35,7 +36,6 @@ impl CodeGenerator for CodeGeneratorX86_64LinuxGnu {
         format!(
             indoc::indoc! {r#"
             global _start
-            global main
 
             bits 64
             section .text
@@ -139,19 +139,17 @@ fn format_nasm_string(string: &str) -> String {
 }
 
 fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions) -> String {
-    let stack_frame_register_size_map: BTreeMap<_, _> = function
-        .registers
-        .values()
-        .map(|r| (r.id, r.ty.layout().size))
-        .collect();
+    const ARG_REGS: &[&str] = &["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
 
     let mut stack_frame_register_offset_map = BTreeMap::new();
     let mut stack_frame_size = 0;
 
-    // TODO: account for address alignment
-    for (id, size) in &stack_frame_register_size_map {
-        stack_frame_register_offset_map.insert(id, stack_frame_size);
-        stack_frame_size += size;
+    for reg in function.registers.values() {
+        stack_frame_size = lir::align_to(
+            stack_frame_size + reg.ty.layout().size,
+            reg.ty.layout().alignment,
+        );
+        stack_frame_register_offset_map.insert(reg.id, stack_frame_size);
     }
 
     /* Assembly output */
@@ -164,6 +162,7 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
         };
     }
 
+    emit!("global {}", function.symbol_name.value());
     emit!("{}:", function.symbol_name.value());
 
     /* Function Prologue */
@@ -171,8 +170,6 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
     emit!("    push rbp");
     emit!("    mov rbp, rsp");
     emit!("    sub rsp, {stack_frame_size}");
-
-    /* Intermediate Blocks */
 
     macro_rules! load {
         ($register:ident, $operand:expr) => {
@@ -218,6 +215,21 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
         };
     }
 
+    /* Move the function arguments into the stack registers */
+
+    for (i, arg) in function.arguments.iter().enumerate() {
+        emit!(
+            "    ; store arg {} into its stack register",
+            strip_ansi_escapes::strip_str(arg.to_string())
+        );
+        emit!(
+            "    mov [rbp - {}], {}",
+            stack_frame_register_offset_map[arg],
+            ARG_REGS[i],
+        );
+    }
+
+    /* Intermediate Blocks */
     for block in function.blocks.values() {
         emit!("{}:", block.id);
 
@@ -282,10 +294,25 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                     todo!("emit asm for integer cast")
                 }
                 lir::Instruction::UnaryOperation {
-                    operator: _,
-                    destination: _,
-                    operand: _,
-                } => todo!(),
+                    operator,
+                    destination,
+                    operand,
+                } => {
+                    load!(rax, operand);
+
+                    match operator {
+                        UnaryOperatorKind::Deref => todo!(),
+                        UnaryOperatorKind::AddressOf => todo!(),
+                        UnaryOperatorKind::LogicalNot => {
+                            emit!("    cmp rcx, rcx");
+                            emit!("    test rax, rax");
+                            emit!("    sete cl");
+                            store!([1] destination, cl);
+                        }
+                        UnaryOperatorKind::BitwiseNot => todo!(),
+                        UnaryOperatorKind::Negate => todo!(),
+                    }
+                }
                 lir::Instruction::BinaryOperation {
                     operator,
                     destination,
@@ -306,7 +333,13 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                         BinaryOperatorKind::Subtract => todo!(),
                         BinaryOperatorKind::Multiply => todo!(),
                         BinaryOperatorKind::Divide => todo!(),
-                        BinaryOperatorKind::Modulus => todo!(),
+                        BinaryOperatorKind::Modulus => {
+                            // TODO: signed vs unsigned div
+                            // TODO: operand sizes
+                            emit!("    cqo");
+                            emit!("    idiv rcx");
+                            store!(destination, rdx);
+                        }
                         BinaryOperatorKind::Equals => {
                             // sete only works on 8-bit registers
                             emit!("    cmp rax, rcx");
@@ -415,8 +448,6 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                     }
 
                     for (i, operand) in register_arguments.into_iter().enumerate() {
-                        const ARG_REGS: &[&str] = &["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
-
                         let reg = ARG_REGS[i];
                         match operand {
                             lir::Operand::Immediate(lir::Immediate::Bool(value)) => {

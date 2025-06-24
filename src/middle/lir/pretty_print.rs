@@ -274,7 +274,7 @@ impl core::fmt::Display for lir::Type {
                 }
                 write!(f, " }}")
             }
-            lir::Type::Array(ty, length) => write!(f, "[{}; {}]", ty, length),
+            lir::Type::Array(ty, length) => write!(f, "[{ty}; {length}]"),
         }
     }
 }

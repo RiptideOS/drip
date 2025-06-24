@@ -1,0 +1,41 @@
+fn main() {
+    fizz_buzz(0);
+    fizz_buzz(1);
+    fizz_buzz(2);
+    fizz_buzz(3);
+    fizz_buzz(4);
+    fizz_buzz(5);
+    fizz_buzz(6);
+    fizz_buzz(7);
+    fizz_buzz(8);
+    fizz_buzz(9);
+    fizz_buzz(10);
+    fizz_buzz(11);
+    fizz_buzz(12);
+    fizz_buzz(13);
+    fizz_buzz(14);
+    fizz_buzz(15);
+    fizz_buzz(16);
+}
+
+fn fizz_buzz(n: i64) {
+    print("{} => ", n);
+
+    let mut is_special = false;
+    
+    if n % 3 == 0 {
+        print("Fizz");
+        is_special = true;
+    }
+
+    if n % 5 == 0 {
+        print("Buzz");
+        is_special = true;
+    }
+
+    if !is_special {
+        print("{}", n);
+    }
+
+    print("\n");
+}

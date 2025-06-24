@@ -128,17 +128,17 @@ fn main() {
         let types = type_check_module(&hir, source_file);
         let mut lir = lower_to_lir(&hir, &types);
 
-        let function = lir.function_definitions.values_mut().next().unwrap();
-        // pretty_print_lir(&function);
-        // println!();
-
         if args.optimization_level > OptimizationLevel::Zero {
-            perform_pre_ssa_optimizations(function);
-            // pretty_print_lir(&function);
+            for function in lir.function_definitions.values_mut() {
+                perform_pre_ssa_optimizations(function);
+                // pretty_print_lir(&function);
+            }
         }
 
         if args.emit == Some(EmitFormat::Lir) {
-            pretty_print_lir(function);
+            for function in lir.function_definitions.values() {
+                pretty_print_lir(function);
+            }
             return;
         }
 

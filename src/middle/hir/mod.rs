@@ -355,6 +355,11 @@ impl ExpressionKind {
             None
         }
     }
+
+    #[track_caller]
+    pub fn expect_literal(&self) -> &Literal {
+        self.as_literal().unwrap()
+    }
 }
 
 #[derive(Debug)]
@@ -375,6 +380,11 @@ impl Literal {
         } else {
             None
         }
+    }
+
+    #[track_caller]
+    pub fn expect_string(&self) -> InternedSymbol {
+        self.as_string().unwrap()
     }
 }
 
