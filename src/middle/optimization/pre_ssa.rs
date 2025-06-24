@@ -1,6 +1,9 @@
 use hashbrown::{HashMap, HashSet};
 
-use crate::{frontend::ast::BinaryOperatorKind, middle::lir};
+use crate::{
+    frontend::ast::{BinaryOperatorKind, UnaryOperatorKind},
+    middle::lir,
+};
 
 // Performs some early LIR optimizations on the provided function like constant
 // propagation, block merging, jump threading, and dead block elimination. This
@@ -217,8 +220,34 @@ fn propagate_constants(function: &mut lir::FunctionDefinition) {
     for block in function.blocks.values_mut() {
         for instruction in &mut block.instructions {
             match instruction {
-                lir::Instruction::UnaryOperation { operand, .. } => {
-                    todo!()
+                lir::Instruction::UnaryOperation {
+                    operator,
+                    destination,
+                    operand,
+                } => {
+                    let value = match (operand, operator) {
+                        (
+                            lir::Operand::Immediate(lir::Immediate::Int(value, width)),
+                            UnaryOperatorKind::BitwiseNot,
+                        ) => lir::Immediate::Int(!*value, *width),
+                        (
+                            lir::Operand::Immediate(lir::Immediate::Int(..)),
+                            UnaryOperatorKind::Negate,
+                        ) => todo!(),
+                        (
+                            lir::Operand::Immediate(lir::Immediate::Bool(value)),
+                            UnaryOperatorKind::LogicalNot,
+                        ) => lir::Immediate::Bool(!*value),
+                        _ => continue,
+                    };
+
+                    let destination = *destination;
+                    let source = lir::Operand::Immediate(value);
+
+                    *instruction = lir::Instruction::Move {
+                        destination,
+                        source,
+                    }
                 }
                 lir::Instruction::BinaryOperation {
                     destination,
