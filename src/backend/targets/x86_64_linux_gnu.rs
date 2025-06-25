@@ -195,8 +195,12 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                     destination,
                     source,
                 } => {
-                    let sized_reg = assembler.load_operand(X86FullRegister::Rax, *source);
-                    assembler.emit(format!("mov {sized_reg}, [{sized_reg}]"));
+                    assembler.load_operand(X86FullRegister::Rax, *source);
+
+                    let ty = &function.registers[destination].ty;
+                    let sized_reg = X86FullRegister::Rax.with_size_bytes(ty.layout().size);
+                    
+                    assembler.emit(format!("mov {sized_reg}, [rax]"));
                     assembler.store_operand(*destination, X86FullRegister::Rax);
                 }
                 lir::Instruction::StoreMem {
