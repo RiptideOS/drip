@@ -235,7 +235,12 @@ impl<'source> Lexer<'source> {
     pub fn column(&self) -> usize {
         let mut pos = 0;
 
-        for line in self.source.contents.lines().take(self.line_number) {
+        for line in self
+            .source
+            .contents
+            .split_inclusive('\n')
+            .take(self.line_number)
+        {
             pos += line.len()
         }
 
@@ -247,7 +252,7 @@ impl<'source> Lexer<'source> {
             "Fatal error reported in Lexer ({}:{}:{}):",
             self.source.origin,
             self.line_number + 1,
-            self.column()
+            self.column() + 1
         );
         eprintln!("{message}");
         std::process::exit(1);
