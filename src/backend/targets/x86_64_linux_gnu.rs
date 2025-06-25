@@ -199,7 +199,7 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
 
                     let ty = &function.registers[destination].ty;
                     let sized_reg = X86FullRegister::Rax.with_size_bytes(ty.layout().size);
-                    
+
                     assembler.emit(format!("mov {sized_reg}, [rax]"));
                     assembler.store_operand(*destination, X86FullRegister::Rax);
                 }
@@ -320,19 +320,32 @@ fn codegen_function(function: &lir::FunctionDefinition, options: &CodegenOptions
                             assembler.emit("sete al");
                             assembler.store_operand(*destination, X86FullRegister::Rax);
                         }
-                        BinaryOperatorKind::NotEquals => todo!(),
+                        BinaryOperatorKind::NotEquals => {
+                            assembler.emit(format!("cmp {lhs_sized_reg}, {rhs_sized_reg}"));
+                            assembler.emit("setne al");
+                            assembler.store_operand(*destination, X86FullRegister::Rax);
+                        }
+                        /* TODO: unsigned versions of these */
                         BinaryOperatorKind::LessThan => {
                             assembler.emit(format!("cmp {lhs_sized_reg}, {rhs_sized_reg}"));
                             assembler.emit("setl al");
                             assembler.store_operand(*destination, X86FullRegister::Rax);
                         }
-                        BinaryOperatorKind::LessThanOrEqualTo => todo!(),
+                        BinaryOperatorKind::LessThanOrEqualTo => {
+                            assembler.emit(format!("cmp {lhs_sized_reg}, {rhs_sized_reg}"));
+                            assembler.emit("setle al");
+                            assembler.store_operand(*destination, X86FullRegister::Rax);
+                        }
                         BinaryOperatorKind::GreaterThan => {
                             assembler.emit(format!("cmp {lhs_sized_reg}, {rhs_sized_reg}"));
                             assembler.emit("setg al");
                             assembler.store_operand(*destination, X86FullRegister::Rax);
                         }
-                        BinaryOperatorKind::GreaterThanOrEqualTo => todo!(),
+                        BinaryOperatorKind::GreaterThanOrEqualTo => {
+                            assembler.emit(format!("cmp {lhs_sized_reg}, {rhs_sized_reg}"));
+                            assembler.emit("setge al");
+                            assembler.store_operand(*destination, X86FullRegister::Rax);
+                        }
                         BinaryOperatorKind::LogicalAnd => todo!(),
                         BinaryOperatorKind::LogicalOr => todo!(),
                         BinaryOperatorKind::BitwiseAnd => todo!(),
