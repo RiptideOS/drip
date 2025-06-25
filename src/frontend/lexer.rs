@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    panic::Location,
     str::Chars,
 };
 
@@ -247,7 +248,11 @@ impl<'source> Lexer<'source> {
         self.position - pos
     }
 
+    #[track_caller]
     fn report_fatal_error(&self, message: &str) -> ! {
+        #[cfg(feature = "error-backtrace")]
+        eprintln!("error backtrace: {}", Location::caller());
+
         eprintln!(
             "Fatal error reported in Lexer ({}:{}:{}):",
             self.source.origin,

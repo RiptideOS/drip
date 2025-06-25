@@ -1,3 +1,5 @@
+use std::panic::Location;
+
 use super::{
     ast::{AssignmentOperator, Item, ItemKind, NodeId},
     intern::InternedSymbol,
@@ -45,21 +47,25 @@ impl<'source> Parser<'source> {
         id
     }
 
+    #[track_caller]
     fn report_fatal_error(&self, offending_span: Span, message: &str) -> ! {
+        #[cfg(feature = "error-backtrace")]
+        eprintln!("error backtrace: {}", Location::caller());
+        
         eprintln!(
-            "{} ({}:{}:{})",
+            "{} (at {})",
             message,
-            self.lexer.source().origin,
-            self.lexer.source().row_for_position(offending_span.start),
-            self.lexer
-                .source()
-                .column_for_position(offending_span.start)
+            self.lexer.source().format_span_position(offending_span)
         );
         self.lexer.source().highlight_span(offending_span);
         std::process::exit(1);
     }
 
+    #[track_caller]
     fn report_fatal_error_old(&self, message: &str) -> ! {
+        #[cfg(feature = "error-backtrace")]
+        eprintln!("error backtrace: {}", Location::caller());
+
         eprintln!(
             "Fatal error reported in Parser ({}:{}:{}):",
             self.lexer.source().origin,
@@ -86,6 +92,7 @@ impl<'source> Parser<'source> {
         token
     }
 
+    #[track_caller]
     fn expect_next_to_be(&mut self, kind: TokenKind) -> Token {
         let token = self.expect_next(&format!("{kind:?}"));
 

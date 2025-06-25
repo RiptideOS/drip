@@ -474,15 +474,9 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
 
     fn report_error(&self, offending_span: Span, message: &str) -> ! {
         eprintln!(
-            "{} ({}:{}:{})",
+            "{} (at {})",
             message,
-            self.module.source_file.origin,
-            self.module
-                .source_file
-                .row_for_position(offending_span.start),
-            self.module
-                .source_file
-                .column_for_position(offending_span.start)
+            self.module.source_file.format_span_position(offending_span)
         );
         self.module.source_file.highlight_span(offending_span);
         std::process::exit(1);

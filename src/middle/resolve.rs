@@ -160,7 +160,7 @@ impl<'res, 'ast> DefinitionCollector<'res, 'ast> {
 
     fn report_duplicate_definition(&self, offending_span: Span) -> ! {
         eprintln!(
-            "{}: duplicate definition for global identifier `{}` ({})",
+            "{}: duplicate definition for global identifier `{}` (at {})",
             "error".red(),
             self.module.source_file.value_of_span(offending_span),
             self.module.source_file.format_span_position(offending_span)
@@ -246,7 +246,7 @@ impl<'res, 'ast> LateResolveVisitor<'res, 'ast> {
 
     fn report_duplicate_binding(&self, offending_span: Span) -> ! {
         eprintln!(
-            "{}: duplicate definition for identifier `{}` ({})",
+            "{}: duplicate definition for identifier `{}` (at {})",
             "error".red(),
             self.module.source_file.value_of_span(offending_span),
             self.module.source_file.format_span_position(offending_span)
