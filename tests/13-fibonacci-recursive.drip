@@ -1,0 +1,18 @@
+fn main() {
+    let mut n = 0;
+
+    while n < 16 {
+        print("{}\n", fibonacci(n));
+        n = n + 1;
+    }
+}
+
+fn fibonacci(n: i64) -> i64 {
+    if n == 0 {
+        return 0;
+    } else if n == 1 {
+        return 1;
+    }
+
+    fibonacci(n - 1) + fibonacci(n - 2)
+}
