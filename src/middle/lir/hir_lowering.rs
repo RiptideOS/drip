@@ -3,18 +3,10 @@ use std::{
     rc::Rc,
 };
 
-use hashbrown::HashSet;
-
 use crate::{
-    frontend::intern::InternedSymbol,
+    frontend::{ast::BinaryOperatorKind, intern::InternedSymbol},
     index::{Index, IndexVec},
-    middle::{
-        hir,
-        lir::{self, Register, RegisterId, StaticLabelId},
-        primitive::{IntKind, UIntKind},
-        ty,
-        type_check::ModuleTypeCheckResults,
-    },
+    middle::{hir, lir, ty, type_check::ModuleTypeCheckResults},
 };
 
 struct BodyLowereringContext<'hir> {
@@ -23,7 +15,7 @@ struct BodyLowereringContext<'hir> {
     owner_id: hir::LocalDefId,
     symbol_name: InternedSymbol,
 
-    next_static_label_id: &'hir mut StaticLabelId,
+    next_static_label_id: &'hir mut lir::StaticLabelId,
     static_strings: &'hir mut BTreeMap<lir::StaticLabelId, InternedSymbol>,
     static_c_strings: &'hir mut BTreeMap<lir::StaticLabelId, InternedSymbol>,
 
@@ -80,27 +72,6 @@ impl<'hir> BodyLowereringContext<'hir> {
     }
 
     fn lower_type(&mut self, ty: ty::Type) -> lir::Type {
-        //  match &*ty {
-        //     ty::TypeKind::Integer(IntKind::I8)
-        //     | ty::TypeKind::UnsignedInteger(UIntKind::U8) => {
-        //         lir::IntegerWidth::I8
-        //     }
-        //     ty::TypeKind::Integer(IntKind::I16)
-        //     | ty::TypeKind::UnsignedInteger(UIntKind::U16) => {
-        //         lir::IntegerWidth::I16
-        //     }
-        //     ty::TypeKind::Integer(IntKind::I32)
-        //     | ty::TypeKind::UnsignedInteger(UIntKind::U32) => {
-        //         lir::IntegerWidth::I32
-        //     }
-        //     ty::TypeKind::Integer(IntKind::I64)
-        //     | ty::TypeKind::UnsignedInteger(UIntKind::U64)
-        //     | ty::TypeKind::Integer(IntKind::ISize)
-        //     | ty::TypeKind::UnsignedInteger(UIntKind::USize) => {
-        //         lir::IntegerWidth::I64
-        //     }
-        //     _ => unreachable!(),
-        // }
         match &*ty {
             ty::TypeKind::Unit => todo!("what do we do here?"),
             ty::TypeKind::Bool => lir::Type::Integer(lir::IntegerWidth::I8),
@@ -119,6 +90,16 @@ impl<'hir> BodyLowereringContext<'hir> {
             ty::TypeKind::FunctionPointer { .. } => lir::Type::Pointer,
             ty::TypeKind::Any => unreachable!("any should always be within a pointer type"),
             ty::TypeKind::Never | ty::TypeKind::Infer(_) | ty::TypeKind::Error => unreachable!(),
+        }
+    }
+
+    fn lower_type_for_load(&mut self, ty: ty::Type) -> lir::Type {
+        match &*ty {
+            ty::TypeKind::Str
+            | ty::TypeKind::Slice(_)
+            | ty::TypeKind::Array { .. }
+            | ty::TypeKind::Tuple(_) => lir::Type::Pointer,
+            _ => self.lower_type(ty),
         }
     }
 
@@ -190,7 +171,7 @@ impl<'hir> BodyLowereringContext<'hir> {
         struct_ptr_reg
     }
 
-    fn print_string(&mut self, str_ptr_reg: RegisterId) -> RegisterId {
+    fn print_string(&mut self, str_ptr_reg: lir::RegisterId) -> lir::RegisterId {
         /* Extract struct fields */
 
         let ptr_ptr_reg = self.create_register_with_lir_type(lir::Type::Pointer);
@@ -236,6 +217,117 @@ impl<'hir> BodyLowereringContext<'hir> {
         });
 
         dest_reg
+    }
+
+    fn lower_binary_op(
+        &mut self,
+        operand_ty: ty::Type,
+        lhs: lir::RegisterId,
+        operator: BinaryOperatorKind,
+        rhs: lir::RegisterId,
+        destination: lir::RegisterId,
+    ) {
+        match &*operand_ty {
+            ty::TypeKind::Unit => todo!(),
+            /* Copyable types which can be operated on directly */
+            ty::TypeKind::Bool
+            | ty::TypeKind::Char
+            | ty::TypeKind::Integer(_)
+            | ty::TypeKind::UnsignedInteger(_)
+            | ty::TypeKind::Float(_)
+            | ty::TypeKind::Pointer(_)
+            | ty::TypeKind::FunctionPointer { .. } => {
+                self.push_instruction(lir::Instruction::BinaryOperation {
+                    operator,
+                    destination,
+                    lhs: lir::Operand::Register(lhs),
+                    rhs: lir::Operand::Register(rhs),
+                });
+            }
+            /* Stored as pointers and must be precisely operated on */
+            ty::TypeKind::Str => todo!(),
+            ty::TypeKind::CStr => todo!(),
+            ty::TypeKind::Slice(_) => todo!(),
+            ty::TypeKind::Array { ty: _, length: _ } => todo!(),
+            ty::TypeKind::Tuple(items) => {
+                let structure =
+                    lir::Struct(items.iter().map(|ty| self.lower_type(ty.clone())).collect());
+
+                // Collect results of comparing all sub elements
+
+                let desination_regs = items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, ty)| {
+                        let reg_ty = self.lower_type_for_load(ty.clone());
+
+                        // Load element from LHS tuple
+
+                        let lhs_ptr_reg = self.create_register_with_lir_type(lir::Type::Integer(
+                            lir::IntegerWidth::I64,
+                        ));
+                        self.push_instruction(lir::Instruction::GetStructElementPointer {
+                            destination: lhs_ptr_reg,
+                            source: lir::Operand::Register(lhs),
+                            ty: structure.clone(),
+                            index: i,
+                        });
+                        let lhs_reg = self.create_register_with_lir_type(reg_ty.clone());
+                        self.push_instruction(lir::Instruction::LoadMem {
+                            destination: lhs_reg,
+                            source: lir::Operand::Register(lhs_ptr_reg),
+                        });
+
+                        // Load element from RHS tuple
+
+                        let rhs_ptr_reg = self.create_register_with_lir_type(lir::Type::Integer(
+                            lir::IntegerWidth::I64,
+                        ));
+                        self.push_instruction(lir::Instruction::GetStructElementPointer {
+                            destination: rhs_ptr_reg,
+                            source: lir::Operand::Register(rhs),
+                            ty: structure.clone(),
+                            index: i,
+                        });
+                        let rhs_reg = self.create_register_with_lir_type(reg_ty);
+                        self.push_instruction(lir::Instruction::LoadMem {
+                            destination: rhs_reg,
+                            source: lir::Operand::Register(rhs_ptr_reg),
+                        });
+
+                        // Compare lhs and rhs
+
+                        let destination = self.create_register_with_lir_type(lir::Type::Integer(
+                            lir::IntegerWidth::I8,
+                        ));
+                        self.lower_binary_op(ty.clone(), lhs_reg, operator, rhs_reg, destination);
+
+                        destination
+                    })
+                    .collect::<Vec<_>>();
+
+                // Make sure that all sub-elements compared equal
+
+                self.push_instruction(lir::Instruction::Move {
+                    destination,
+                    source: lir::Operand::Register(*desination_regs.first().unwrap()),
+                });
+
+                for reg in desination_regs.into_iter().skip(1) {
+                    self.push_instruction(lir::Instruction::BinaryOperation {
+                        operator: BinaryOperatorKind::Equals,
+                        destination,
+                        lhs: lir::Operand::Register(destination),
+                        rhs: lir::Operand::Register(reg),
+                    });
+                }
+            }
+            /* Can never be within a binary op */
+            ty::TypeKind::Never
+            | ty::TypeKind::Any
+            | ty::TypeKind::Infer(_)
+            | ty::TypeKind::Error => unreachable!(),
+        }
     }
 }
 
@@ -367,7 +459,49 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
                         .insert(expression.hir_id.local_id, *reg);
                 }
             }
-            hir::ExpressionKind::Tuple(expressions) => todo!(),
+            hir::ExpressionKind::Tuple(expressions) => {
+                hir::visit::walk_expression(self, expression.clone());
+
+                /* Create the struct on the stack */
+
+                let struct_ptr_reg = self.create_register_with_lir_type(lir::Type::Pointer);
+
+                let structure = lir::Struct(
+                    expressions
+                        .iter()
+                        .map(|e| {
+                            let ty = self.type_map.get_type(e.hir_id);
+                            self.lower_type(ty)
+                        })
+                        .collect(),
+                );
+
+                self.push_instruction(lir::Instruction::AllocStack {
+                    destination: struct_ptr_reg,
+                    ty: lir::Type::Struct(structure.clone()),
+                });
+
+                /* Set each field */
+
+                for (i, e) in expressions.iter().enumerate() {
+                    let element_ptr_reg = self.create_register_with_lir_type(lir::Type::Pointer);
+                    self.push_instruction(lir::Instruction::GetStructElementPointer {
+                        destination: element_ptr_reg,
+                        source: lir::Operand::Register(struct_ptr_reg),
+                        ty: structure.clone(),
+                        index: i,
+                    });
+
+                    let expr_reg = self.expression_to_register_map[&e.hir_id.local_id];
+                    self.push_instruction(lir::Instruction::StoreMem {
+                        destination: lir::Operand::Register(element_ptr_reg),
+                        source: lir::Operand::Register(expr_reg),
+                    });
+                }
+
+                self.expression_to_register_map
+                    .insert(expression.hir_id.local_id, struct_ptr_reg);
+            }
             hir::ExpressionKind::FunctionCall { target, arguments } => {
                 hir::visit::walk_expression(self, target.clone());
 
@@ -522,15 +656,12 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
                 let ty = self.type_map.get_type(expression.hir_id);
                 let dest_reg = self.create_register(ty);
 
-                let lhs = self.expression_to_register_map[&lhs.hir_id.local_id];
-                let rhs = self.expression_to_register_map[&rhs.hir_id.local_id];
+                let operand_ty = self.type_map.get_type(lhs.hir_id);
 
-                self.push_instruction(lir::Instruction::BinaryOperation {
-                    operator: *operator,
-                    destination: dest_reg,
-                    lhs: lir::Operand::Register(lhs),
-                    rhs: lir::Operand::Register(rhs),
-                });
+                let lhs_reg = self.expression_to_register_map[&lhs.hir_id.local_id];
+                let rhs_reg = self.expression_to_register_map[&rhs.hir_id.local_id];
+
+                self.lower_binary_op(operand_ty, lhs_reg, *operator, rhs_reg, dest_reg);
 
                 self.expression_to_register_map
                     .insert(expression.hir_id.local_id, dest_reg);
@@ -875,7 +1006,7 @@ fn parse_format_string(string: &str) -> Vec<FormatStringItem> {
 pub fn lower_to_lir(module: &hir::Module, type_map: &ModuleTypeCheckResults) -> lir::Module {
     let mut function_definitions = BTreeMap::new();
 
-    let mut next_static_label_id = StaticLabelId::new(0);
+    let mut next_static_label_id = lir::StaticLabelId::new(0);
     let mut static_strings = BTreeMap::new();
     let mut static_c_strings = BTreeMap::new();
 
