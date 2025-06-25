@@ -124,19 +124,6 @@ pub enum Node {
 }
 
 impl Node {
-    pub fn as_owner(self) -> Option<OwnerNode> {
-        match self {
-            Node::Item(item) => Some(OwnerNode::Item(item)),
-            Node::Block(_)
-            | Node::Statement(_)
-            | Node::LetStatement(_)
-            | Node::Type(_)
-            | Node::FunctionParameter(_)
-            | Node::Expression(_)
-            | Node::PathSegment(_) => None,
-        }
-    }
-
     pub fn id(&self) -> HirId {
         match self {
             Node::Item(v) => v.hir_id(),
@@ -147,6 +134,19 @@ impl Node {
             Node::LetStatement(v) => v.hir_id,
             Node::Type(v) => v.hir_id,
             Node::PathSegment(v) => v.hir_id,
+        }
+    }
+
+    pub fn as_owner(self) -> Option<OwnerNode> {
+        match self {
+            Node::Item(item) => Some(OwnerNode::Item(item)),
+            Node::Block(_)
+            | Node::Statement(_)
+            | Node::LetStatement(_)
+            | Node::Type(_)
+            | Node::FunctionParameter(_)
+            | Node::Expression(_)
+            | Node::PathSegment(_) => None,
         }
     }
 
@@ -354,19 +354,29 @@ pub enum ExpressionKind {
     Return(Option<Rc<Expression>>),
 }
 
-impl ExpressionKind {
-    pub fn as_literal(&self) -> Option<&Literal> {
-        if let Self::Literal(l) = self {
-            Some(l)
-        } else {
-            None
-        }
-    }
+macro_rules! expr_kind_as {
+    ($suffix:ident, $variant:ident, $ty:ty) => {
+        paste::paste! {
+            #[allow(unused)]
+            pub fn [<as_ $suffix>](&self) -> Option<&$ty> {
+                if let Self::$variant(v) = self {
+                    Some(v)
+                } else {
+                    None
+                }
+            }
 
-    #[track_caller]
-    pub fn expect_literal(&self) -> &Literal {
-        self.as_literal().unwrap()
-    }
+            #[allow(unused)]
+            #[track_caller]
+            pub fn [<expect_ $suffix>](&self) -> &$ty {
+                self.[<as_ $suffix>]().unwrap()
+            }
+        }
+    };
+}
+impl ExpressionKind {
+    expr_kind_as!(literal, Literal, Literal);
+    expr_kind_as!(tuple, Tuple, Rc<[Rc<Expression>]>);
 }
 
 #[derive(Debug)]
