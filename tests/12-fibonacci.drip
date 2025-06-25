@@ -1,0 +1,31 @@
+fn main() {
+    let mut n = 0;
+
+    while n < 16 {
+        print("{}\n", fibonacci(n));
+        n = n + 1;
+    }
+}
+
+fn fibonacci(n: i64) -> i64 {
+    if n == 0 {
+        return 0;
+    } else if n == 1 {
+        return 1;
+    }
+
+    let mut prev = 0;
+    let mut curr = 1;
+
+    let mut i = 2;
+
+    while i < n + 1 {
+        let next = prev + curr;
+        prev = curr;
+        curr = next;
+
+        i = i + 1;
+    }
+
+    curr
+}

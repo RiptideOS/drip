@@ -258,15 +258,24 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
         let block_id = self.create_block();
         self.block_stack.push_back(block_id);
 
-        hir::visit::walk_body(self, body);
+        hir::visit::walk_body(self, body.clone());
+
+        let implicit_return = body
+            .block
+            .expression
+            .as_ref()
+            .and_then(|e| self.expression_to_register_map.get(&e.hir_id.local_id))
+            .copied()
+            .map(lir::Operand::Register);
+
+        // Main implicitly returns 0 even if there is no return valeu
+        let value = implicit_return.or_else(|| {
+            (self.symbol_name.value() == "main").then_some(lir::Operand::Immediate(
+                lir::Immediate::Int(0, lir::IntegerWidth::I8),
+            ))
+        });
 
         let current_block = lir::BlockId::new(self.block_map.len() - 1);
-
-        // Main implicitly returns 0 even if the signature does not
-        // say so
-        let value = (self.symbol_name.value() == "main").then_some(lir::Operand::Immediate(
-            lir::Immediate::Int(0, lir::IntegerWidth::I8),
-        ));
 
         self.block_map[current_block]
             .instructions
