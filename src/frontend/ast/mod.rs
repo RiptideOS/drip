@@ -24,12 +24,20 @@ pub struct Item {
 #[derive(Debug)]
 pub enum ItemKind {
     FunctionDefinition(Box<FunctionDefinition>),
+    TypeAlias(Box<TypeAlias>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Visibility {
+    Private,
+    Public,
 }
 
 #[derive(Debug)]
 pub struct FunctionDefinition {
     pub id: NodeId,
     pub span: Span,
+    pub visibility: Visibility,
     pub signature: FunctionSignature,
     pub body: Block,
 }
@@ -54,6 +62,15 @@ pub struct FunctionParameterList {
 pub struct FunctionParameter {
     pub id: NodeId,
     pub span: Span,
+    pub name: Identifier,
+    pub ty: Type,
+}
+
+#[derive(Debug)]
+pub struct TypeAlias {
+    pub id: NodeId,
+    pub span: Span,
+    pub visibility: Visibility,
     pub name: Identifier,
     pub ty: Type,
 }

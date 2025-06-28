@@ -523,7 +523,10 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
                             .node()
                             .as_item()
                             .unwrap()
-                            .kind;
+                            .kind
+                        else {
+                            unreachable!()
+                        };
 
                         let args = arguments
                             .iter()
@@ -1011,8 +1014,11 @@ pub fn lower_to_lir(module: &hir::Module, type_map: &ModuleTypeCheckResults) -> 
     let mut static_c_strings = BTreeMap::new();
 
     for owner_id in module.get_owners() {
-        let hir::ItemKind::Function { name, .. } =
-            &module.get_owner(owner_id).node().as_item().unwrap().kind;
+        let item = module.get_owner(owner_id).node().as_item().unwrap();
+        let name = match &item.kind {
+            hir::ItemKind::Function { name, .. } => name,
+            hir::ItemKind::TypeAlias { .. } => continue,
+        };
 
         let mut ctx = BodyLowereringContext {
             module,

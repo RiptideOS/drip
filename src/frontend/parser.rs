@@ -10,8 +10,8 @@ use crate::frontend::{
         AssignmentOperatorKind, BinaryOperator, BinaryOperatorKind, Block, Expression,
         ExpressionKind, FunctionCallArgumentList, FunctionDefinition, FunctionParameter,
         FunctionParameterList, FunctionSignature, Identifier, Literal, LiteralKind, Local,
-        LocalKind, Module, QualifiedIdentifier, Statement, StatementKind, Type, TypeKind,
-        UnaryOperator, UnaryOperatorKind,
+        LocalKind, Module, QualifiedIdentifier, Statement, StatementKind, Type, TypeAlias,
+        TypeKind, UnaryOperator, UnaryOperatorKind, Visibility,
     },
     lexer::{Keyword, Lexer, Span, Token, TokenKind},
 };
@@ -51,7 +51,7 @@ impl<'source> Parser<'source> {
     fn report_fatal_error(&self, offending_span: Span, message: &str) -> ! {
         #[cfg(feature = "error-backtrace")]
         eprintln!("error backtrace: {}", Location::caller());
-        
+
         eprintln!(
             "{} (at {})",
             message,
@@ -127,6 +127,15 @@ impl<'source> Parser<'source> {
                     kind: ItemKind::FunctionDefinition(function),
                 }
             }
+            TokenKind::Keyword(Keyword::Type) => {
+                let type_alias = Box::new(self.parse_type_alias());
+
+                Item {
+                    id: self.create_node_id(),
+                    span: type_alias.span,
+                    kind: ItemKind::TypeAlias(type_alias),
+                }
+            }
             _ => self.report_fatal_error_old(&format!(
                 "Expected function definition in module but found: {} ({:?})",
                 self.lexer.source().value_of_span(peeked.span),
@@ -145,6 +154,7 @@ impl<'source> Parser<'source> {
         FunctionDefinition {
             id: self.create_node_id(),
             span: Span::new(fn_keyword.span.start, body.span.end),
+            visibility: Visibility::Private,
             signature,
             body,
         }
@@ -175,43 +185,6 @@ impl<'source> Parser<'source> {
             name,
             parameters,
             return_type,
-        }
-    }
-
-    // main
-    fn parse_identifier(&mut self) -> Identifier {
-        let token = self.expect_next_to_be(TokenKind::Identifier);
-
-        Identifier {
-            id: self.create_node_id(),
-            span: token.span,
-            symbol: InternedSymbol::new(self.lexer.source().value_of_span(token.span)),
-        }
-    }
-
-    // std::fs::read_to_string
-    fn parse_qualified_identifier(&mut self) -> QualifiedIdentifier {
-        // FIXME: rust-analyzer bug causing a false unsafe report??
-        #[allow(unused_unsafe)]
-        let mut segments = unsafe { vec![self.parse_identifier()] };
-
-        // While the next token is a double colon try and parse more segments
-        while self
-            .lexer
-            .peek()
-            .is_some_and(|t| t.kind == TokenKind::DoubleColon)
-        {
-            self.expect_next_to_be(TokenKind::DoubleColon);
-            segments.push(self.parse_identifier());
-        }
-
-        QualifiedIdentifier {
-            id: self.create_node_id(),
-            span: Span::new(
-                segments.first().unwrap().span.start,
-                segments.last().unwrap().span.end,
-            ),
-            segments,
         }
     }
 
@@ -259,6 +232,60 @@ impl<'source> Parser<'source> {
             span: Span::new(name.span.start, ty.span.end),
             name,
             ty,
+        }
+    }
+
+    // type A = i32;
+    fn parse_type_alias(&mut self) -> TypeAlias {
+        let type_keyword = self.expect_keyword(Keyword::Type);
+        let name = self.parse_identifier();
+        self.expect_next_to_be(TokenKind::Equals);
+        let ty = self.parse_type();
+        let semi = self.expect_next_to_be(TokenKind::Semicolon);
+
+        TypeAlias {
+            id: self.create_node_id(),
+            span: Span::new(type_keyword.span.start, semi.span.end),
+            visibility: Visibility::Private,
+            name,
+            ty,
+        }
+    }
+
+    // main
+    fn parse_identifier(&mut self) -> Identifier {
+        let token = self.expect_next_to_be(TokenKind::Identifier);
+
+        Identifier {
+            id: self.create_node_id(),
+            span: token.span,
+            symbol: InternedSymbol::new(self.lexer.source().value_of_span(token.span)),
+        }
+    }
+
+    // std::fs::read_to_string
+    fn parse_qualified_identifier(&mut self) -> QualifiedIdentifier {
+        // FIXME: rust-analyzer bug causing a false unsafe report??
+        #[allow(unused_unsafe)]
+        let mut segments = unsafe { vec![self.parse_identifier()] };
+
+        // While the next token is a double colon try and parse more segments
+        while self
+            .lexer
+            .peek()
+            .is_some_and(|t| t.kind == TokenKind::DoubleColon)
+        {
+            self.expect_next_to_be(TokenKind::DoubleColon);
+            segments.push(self.parse_identifier());
+        }
+
+        QualifiedIdentifier {
+            id: self.create_node_id(),
+            span: Span::new(
+                segments.first().unwrap().span.start,
+                segments.last().unwrap().span.end,
+            ),
+            segments,
         }
     }
 

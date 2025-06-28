@@ -163,6 +163,7 @@ pub enum Keyword {
     Break,
     Continue,
     Return,
+    Type,
 }
 
 /// Table of single char tokens (matched after longer sequences are checked for)

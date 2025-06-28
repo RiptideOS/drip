@@ -20,8 +20,6 @@ pub trait Visitor: Sized {
         walk_function_definition(self, name, signature, body)
     }
 
-    fn visit_identifier(&mut self, _identifier: &Identifier) {}
-
     fn visit_function_signature(&mut self, signature: &FunctionSignature) {
         walk_function_signature(self, signature)
     }
@@ -29,6 +27,12 @@ pub trait Visitor: Sized {
     fn visit_function_parameter(&mut self, parameter: Rc<FunctionParameter>) {
         walk_function_parameter(self, parameter)
     }
+
+    fn visit_type_alias(&mut self, name: &Identifier, ty: Rc<Type>) {
+        walk_type_alias(self, name, ty)
+    }
+
+    fn visit_identifier(&mut self, _identifier: &Identifier) {}
 
     fn visit_type(&mut self, ty: Rc<Type>) {
         walk_type(self, ty)
@@ -92,6 +96,7 @@ pub fn walk_item(visitor: &mut impl Visitor, item: Rc<Item>) {
             signature,
             body,
         } => visitor.visit_function_definition(name, signature, *body),
+        ItemKind::TypeAlias { name, ty } => visitor.visit_type_alias(name, ty.clone()),
     }
 }
 
@@ -122,6 +127,11 @@ pub fn walk_function_signature(visitor: &mut impl Visitor, signature: &FunctionS
 
 pub fn walk_function_parameter(visitor: &mut impl Visitor, parameter: Rc<FunctionParameter>) {
     visitor.visit_identifier(&parameter.name);
+}
+
+pub fn walk_type_alias(visitor: &mut impl Visitor, name: &Identifier, ty: Rc<Type>) {
+    visitor.visit_identifier(name);
+    visitor.visit_type(ty);
 }
 
 pub fn walk_type(visitor: &mut impl Visitor, ty: Rc<Type>) {

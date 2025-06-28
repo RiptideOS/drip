@@ -152,26 +152,7 @@ impl<'hir> TypeContext<'hir> {
                 let owner = &self.module.owners[local_def_id];
 
                 match owner.node() {
-                    hir::OwnerNode::Item(item) => match &item.kind {
-                        hir::ItemKind::Function { signature, .. } => {
-                            let parameters = signature
-                                .parameters
-                                .iter()
-                                .map(|ty| self.compute_hir_type(ty.clone()))
-                                .collect();
-                            let return_type = signature
-                                .return_type
-                                .as_ref()
-                                .map(|ty| self.compute_hir_type(ty.clone()))
-                                .unwrap_or_else(|| self.get_unit_type());
-
-                            self.intern_type(TypeKind::FunctionPointer {
-                                parameters,
-                                return_type,
-                                is_variadic: signature.variadic_type.is_some(),
-                            })
-                        }
-                    },
+                    hir::OwnerNode::Item(item) => self.def_id_to_type_map[&item.owner_id].clone(),
                 }
             }
             hir::Resolution::Primitive(primitive_kind) => self.get_primitive_type(primitive_kind),
@@ -334,6 +315,12 @@ impl<'tcx, 'hir> hir::visit::Visitor for GlobalTypeEnvironmentIndexer<'tcx, 'hir
         match &item.kind {
             hir::ItemKind::Function { signature, .. } => {
                 let ty = self.compute_type_for_function_signature(signature);
+                self.type_context
+                    .def_id_to_type_map
+                    .insert(item.owner_id, ty);
+            }
+            hir::ItemKind::TypeAlias { ty, .. } => {
+                let ty = self.type_context.compute_hir_type(ty.clone());
                 self.type_context
                     .def_id_to_type_map
                     .insert(item.owner_id, ty);

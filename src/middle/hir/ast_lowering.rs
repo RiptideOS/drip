@@ -62,6 +62,7 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
     fn lower_item(&mut self, item: &'ast ast::Item) -> Rc<hir::Item> {
         let kind = match &item.kind {
             ast::ItemKind::FunctionDefinition(f) => {
+                let name = self.lower_ident(&f.signature.name);
                 let signature = self.lower_function_signature(&f.signature);
 
                 // NOTE: must lower parameters first to bind names
@@ -71,10 +72,16 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
                 let body = self.set_body(hir::Body { params, block });
 
                 hir::ItemKind::Function {
-                    name: self.lower_ident(&f.signature.name),
+                    name,
                     signature,
                     body,
                 }
+            }
+            ast::ItemKind::TypeAlias(type_alias) => {
+                let name = self.lower_ident(&type_alias.name);
+                let ty = self.lower_type(&type_alias.ty);
+
+                hir::ItemKind::TypeAlias { name, ty }
             }
         };
 

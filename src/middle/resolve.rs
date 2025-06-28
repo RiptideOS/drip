@@ -190,6 +190,21 @@ impl<'res, 'ast> Visitor<'ast> for DefinitionCollector<'res, 'ast> {
                     hir::DefinitionKind::Function,
                 );
             }
+            ast::ItemKind::TypeAlias(type_alias) => {
+                if self
+                    .resolver
+                    .global_type_scope
+                    .contains_key(&type_alias.name.symbol)
+                {
+                    self.report_duplicate_definition(type_alias.name.span)
+                }
+
+                self.resolver.create_definition(
+                    item.id,
+                    type_alias.name.symbol,
+                    hir::DefinitionKind::Alias,
+                );
+            }
         }
 
         visit::walk_item(self, item);

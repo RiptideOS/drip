@@ -4,7 +4,7 @@ use super::{
     Block, Expression, ExpressionKind, FunctionCallArgumentList, FunctionDefinition,
     FunctionParameter, FunctionParameterList, FunctionSignature, Identifier, Item, ItemKind,
     Literal, Local, LocalKind, Module, QualifiedIdentifier, Statement, StatementKind, Type,
-    TypeKind,
+    TypeAlias, TypeKind,
 };
 
 pub trait Visitor<'ast>: Sized {
@@ -20,8 +20,6 @@ pub trait Visitor<'ast>: Sized {
         walk_function_signature(self, signature)
     }
 
-    fn visit_identifier(&mut self, _identifier: &'ast Identifier) {}
-
     fn visit_function_parameter_list(&mut self, parameters: &'ast FunctionParameterList) {
         walk_function_parameter_list(self, parameters)
     }
@@ -29,6 +27,12 @@ pub trait Visitor<'ast>: Sized {
     fn visit_function_parameter(&mut self, parameter: &'ast FunctionParameter) {
         walk_function_parameter(self, parameter)
     }
+
+    fn visit_type_alias(&mut self, type_alias: &'ast TypeAlias) {
+        walk_type_alias(self, type_alias)
+    }
+
+    fn visit_identifier(&mut self, _identifier: &'ast Identifier) {}
 
     fn visit_type(&mut self, ty: &'ast Type) {
         walk_type(self, ty)
@@ -70,6 +74,7 @@ pub fn walk_module<'a>(visitor: &mut impl Visitor<'a>, module: &'a Module<'a>) {
 pub fn walk_item<'a>(visitor: &mut impl Visitor<'a>, item: &'a Item) {
     match &item.kind {
         ItemKind::FunctionDefinition(function) => visitor.visit_function_definition(function),
+        ItemKind::TypeAlias(type_alias) => visitor.visit_type_alias(type_alias),
     }
 }
 
@@ -108,6 +113,11 @@ pub fn walk_function_parameter<'a>(
 ) {
     visitor.visit_identifier(&parameter.name);
     visitor.visit_type(&parameter.ty);
+}
+
+pub fn walk_type_alias<'a>(visitor: &mut impl Visitor<'a>, alias: &'a TypeAlias) {
+    visitor.visit_identifier(&alias.name);
+    visitor.visit_type(&alias.ty);
 }
 
 pub fn walk_type<'a>(visitor: &mut impl Visitor<'a>, ty: &'a Type) {

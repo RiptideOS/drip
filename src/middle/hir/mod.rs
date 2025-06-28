@@ -223,7 +223,11 @@ pub enum ItemKind {
         signature: FunctionSignature,
         body: BodyId,
     },
-    // TODO: structs, enums, unions, static, const, type alias, submodule, impl
+    TypeAlias {
+        name: Identifier,
+        ty: Rc<Type>,
+    },
+    // TODO: structs, enums, unions, static, const, submodule, impl
 }
 
 #[derive(Debug, Clone)]
