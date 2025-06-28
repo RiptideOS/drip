@@ -6,6 +6,7 @@ use super::{
     Literal, Local, LocalKind, Module, QualifiedIdentifier, Statement, StatementKind, Type,
     TypeAlias, TypeKind,
 };
+use crate::frontend::ast::{StructDefinition, StructField};
 
 pub trait Visitor<'ast>: Sized {
     fn visit_item(&mut self, item: &'ast Item) {
@@ -26,6 +27,14 @@ pub trait Visitor<'ast>: Sized {
 
     fn visit_function_parameter(&mut self, parameter: &'ast FunctionParameter) {
         walk_function_parameter(self, parameter)
+    }
+
+    fn visit_struct_definition(&mut self, struct_definition: &'ast StructDefinition) {
+        walk_struct_definition(self, struct_definition)
+    }
+
+    fn visit_struct_field(&mut self, struct_field: &'ast StructField) {
+        walk_struct_field(self, struct_field)
     }
 
     fn visit_type_alias(&mut self, type_alias: &'ast TypeAlias) {
@@ -73,8 +82,15 @@ pub fn walk_module<'a>(visitor: &mut impl Visitor<'a>, module: &'a Module<'a>) {
 
 pub fn walk_item<'a>(visitor: &mut impl Visitor<'a>, item: &'a Item) {
     match &item.kind {
-        ItemKind::FunctionDefinition(function) => visitor.visit_function_definition(function),
-        ItemKind::TypeAlias(type_alias) => visitor.visit_type_alias(type_alias),
+        ItemKind::FunctionDefinition(function) => {
+            visitor.visit_function_definition(function);
+        }
+        ItemKind::StructDefinition(struct_definition) => {
+            visitor.visit_struct_definition(struct_definition);
+        }
+        ItemKind::TypeAlias(type_alias) => {
+            visitor.visit_type_alias(type_alias);
+        }
     }
 }
 
@@ -113,6 +129,22 @@ pub fn walk_function_parameter<'a>(
 ) {
     visitor.visit_identifier(&parameter.name);
     visitor.visit_type(&parameter.ty);
+}
+
+pub fn walk_struct_definition<'a>(
+    visitor: &mut impl Visitor<'a>,
+    struct_definition: &'a StructDefinition,
+) {
+    visitor.visit_identifier(&struct_definition.name);
+
+    for field in &struct_definition.fields {
+        visitor.visit_struct_field(field);
+    }
+}
+
+pub fn walk_struct_field<'a>(visitor: &mut impl Visitor<'a>, field: &'a StructField) {
+    visitor.visit_identifier(&field.name);
+    visitor.visit_type(&field.ty);
 }
 
 pub fn walk_type_alias<'a>(visitor: &mut impl Visitor<'a>, alias: &'a TypeAlias) {

@@ -62,3 +62,9 @@ impl core::fmt::Debug for InternedSymbol {
             .finish()
     }
 }
+
+impl core::fmt::Display for InternedSymbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.value())
+    }
+}

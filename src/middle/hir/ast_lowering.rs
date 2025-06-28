@@ -77,6 +77,12 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
                     body,
                 }
             }
+            ast::ItemKind::StructDefinition(struct_definition) => {
+                let name = self.lower_ident(&struct_definition.name);
+                let fields = self.lower_struct_fields(&struct_definition.fields);
+
+                hir::ItemKind::Struct { name, fields }
+            }
             ast::ItemKind::TypeAlias(type_alias) => {
                 let name = self.lower_ident(&type_alias.name);
                 let ty = self.lower_type(&type_alias.ty);
@@ -217,7 +223,7 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
         &mut self,
         params: &'ast ast::FunctionParameterList,
     ) -> Rc<[Rc<hir::FunctionParameter>]> {
-        let params: Rc<[_]> = params
+        params
             .parameters
             .iter()
             .map(|p| {
@@ -233,9 +239,29 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
                 param
             })
             .map(Rc::new)
-            .collect();
+            .collect()
+    }
 
-        params
+    fn lower_struct_fields(
+        &mut self,
+        fields: &'ast [ast::StructField],
+    ) -> Rc<[Rc<hir::StructField>]> {
+        fields
+            .iter()
+            .map(|f| {
+                let field = hir::StructField {
+                    hir_id: self.next_id(),
+                    name: self.lower_ident(&f.name),
+                    ty: self.lower_type(&f.ty),
+                    span: f.span,
+                };
+
+                self.local_id_map.insert(f.id, field.hir_id.local_id);
+
+                field
+            })
+            .map(Rc::new)
+            .collect()
     }
 
     fn lower_block(&mut self, block: &'ast ast::Block) -> Rc<hir::Block> {
@@ -682,6 +708,13 @@ impl hir::visit::Visitor for HirIndexer {
 
     fn visit_function_parameter(&mut self, parameter: Rc<hir::FunctionParameter>) {
         self.insert(parameter.hir_id, hir::Node::FunctionParameter(parameter));
+    }
+
+    fn visit_struct_field(&mut self, field: Rc<hir::StructField>) {
+        self.insert(field.hir_id, hir::Node::StructField(field.clone()));
+        self.with_parent(field.hir_id, |this| {
+            hir::visit::walk_struct_field(this, field);
+        });
     }
 
     fn visit_expression(&mut self, expression: Rc<hir::Expression>) {

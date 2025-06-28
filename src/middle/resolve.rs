@@ -190,6 +190,21 @@ impl<'res, 'ast> Visitor<'ast> for DefinitionCollector<'res, 'ast> {
                     hir::DefinitionKind::Function,
                 );
             }
+            ast::ItemKind::StructDefinition(struct_definition) => {
+                if self
+                    .resolver
+                    .global_type_scope
+                    .contains_key(&struct_definition.name.symbol)
+                {
+                    self.report_duplicate_definition(struct_definition.name.span)
+                }
+
+                self.resolver.create_definition(
+                    item.id,
+                    struct_definition.name.symbol,
+                    hir::DefinitionKind::Struct,
+                );
+            }
             ast::ItemKind::TypeAlias(type_alias) => {
                 if self
                     .resolver

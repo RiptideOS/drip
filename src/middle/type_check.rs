@@ -39,7 +39,7 @@ use crate::{
     index::Index,
     middle::{
         primitive::{FloatKind, IntKind},
-        ty::{FloatVariableId, IntVariableId, Type, TypeKind, TypeVariable},
+        ty::{FloatVariableId, IntVariableId, StructField, Type, TypeKind, TypeVariable},
     },
 };
 
@@ -315,6 +315,25 @@ impl<'tcx, 'hir> hir::visit::Visitor for GlobalTypeEnvironmentIndexer<'tcx, 'hir
         match &item.kind {
             hir::ItemKind::Function { signature, .. } => {
                 let ty = self.compute_type_for_function_signature(signature);
+                self.type_context
+                    .def_id_to_type_map
+                    .insert(item.owner_id, ty);
+            }
+            hir::ItemKind::Struct { name, fields } => {
+                let name = name.symbol;
+                let fields = fields
+                    .iter()
+                    .map(|field| StructField {
+                        name: field.name.symbol,
+                        ty: self.type_context.compute_hir_type(field.ty.clone()),
+                    })
+                    .collect();
+
+                let ty = self.type_context.intern_type(TypeKind::Struct {
+                    def_id: item.owner_id,
+                    name,
+                    fields,
+                });
                 self.type_context
                     .def_id_to_type_map
                     .insert(item.owner_id, ty);
@@ -1123,6 +1142,14 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                 });
             }
         }
+    }
+
+    fn visit_struct_field(&mut self, field: Rc<hir::StructField>) {
+        hir::visit::walk_struct_field(self, field.clone());
+        // FIXME: can we use the cached type info from when we indexed the struct?
+
+        let computed_ty = self.type_context.compute_hir_type(field.ty.clone());
+        self.insert_type(field.hir_id, computed_ty);
     }
 
     /// Precompute types in function parameters and local bindings

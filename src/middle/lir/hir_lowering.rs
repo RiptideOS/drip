@@ -87,6 +87,12 @@ impl<'hir> BodyLowereringContext<'hir> {
             ty::TypeKind::Tuple(items) => lir::Type::Struct(lir::Struct(
                 items.iter().map(|ty| self.lower_type(ty.clone())).collect(),
             )),
+            ty::TypeKind::Struct { fields, .. } => lir::Type::Struct(lir::Struct(
+                fields
+                    .iter()
+                    .map(|field| self.lower_type(field.ty.clone()))
+                    .collect(),
+            )),
             ty::TypeKind::FunctionPointer { .. } => lir::Type::Pointer,
             ty::TypeKind::Any => unreachable!("any should always be within a pointer type"),
             ty::TypeKind::Never | ty::TypeKind::Infer(_) | ty::TypeKind::Error => unreachable!(),
@@ -229,7 +235,6 @@ impl<'hir> BodyLowereringContext<'hir> {
     ) {
         match &*operand_ty {
             ty::TypeKind::Unit => todo!(),
-            /* Copyable types which can be operated on directly */
             ty::TypeKind::Bool
             | ty::TypeKind::Char
             | ty::TypeKind::Integer(_)
@@ -244,7 +249,6 @@ impl<'hir> BodyLowereringContext<'hir> {
                     rhs: lir::Operand::Register(rhs),
                 });
             }
-            /* Stored as pointers and must be precisely operated on */
             ty::TypeKind::Str => todo!(),
             ty::TypeKind::CStr => todo!(),
             ty::TypeKind::Slice(_) => todo!(),
@@ -322,7 +326,11 @@ impl<'hir> BodyLowereringContext<'hir> {
                     });
                 }
             }
-            /* Can never be within a binary op */
+            ty::TypeKind::Struct {
+                def_id,
+                name,
+                fields,
+            } => todo!(),
             ty::TypeKind::Never
             | ty::TypeKind::Any
             | ty::TypeKind::Infer(_)
@@ -1017,7 +1025,7 @@ pub fn lower_to_lir(module: &hir::Module, type_map: &ModuleTypeCheckResults) -> 
         let item = module.get_owner(owner_id).node().as_item().unwrap();
         let name = match &item.kind {
             hir::ItemKind::Function { name, .. } => name,
-            hir::ItemKind::TypeAlias { .. } => continue,
+            hir::ItemKind::Struct { .. } | hir::ItemKind::TypeAlias { .. } => continue,
         };
 
         let mut ctx = BodyLowereringContext {

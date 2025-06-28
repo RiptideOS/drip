@@ -4,8 +4,12 @@ use colored::Colorize;
 use hashbrown::HashSet;
 
 use crate::{
+    frontend::intern::InternedSymbol,
     index::{Index, simple_index},
-    middle::primitive::{FloatKind, IntKind, UIntKind},
+    middle::{
+        hir,
+        primitive::{FloatKind, IntKind, UIntKind},
+    },
 };
 
 #[doc(hidden)]
@@ -73,6 +77,19 @@ pub enum TypeKind {
     ///
     /// A fixed size list of different types
     Tuple(Rc<[Type]>),
+    /// struct T {
+    ///     a: i32,
+    ///     b: f64,
+    ///     b: (bool, String)
+    /// }
+    ///
+    /// A user defined type with named fields
+    Struct {
+        /// Allows structs with the same layout to be distinct types
+        def_id: hir::LocalDefId,
+        name: InternedSymbol,
+        fields: Rc<[StructField]>,
+    },
     /// fn(i32, str, *T) -> u8
     ///
     /// A raw pointer to a function body
@@ -92,6 +109,12 @@ pub enum TypeKind {
     /// can't compute the type of. If you find this in your type, there is no
     /// use emitting another error since one has already been created.
     Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StructField {
+    pub name: InternedSymbol,
+    pub ty: Type,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -143,6 +166,7 @@ impl TypeKind {
             | TypeKind::CStr
             | TypeKind::Array { .. }
             | TypeKind::Tuple(_)
+            | TypeKind::Struct { .. }
             | TypeKind::FunctionPointer { .. }
             | TypeKind::Any
             | TypeKind::Error => false,
@@ -198,7 +222,15 @@ impl TypeKind {
             TypeKind::Pointer(inner)
             | TypeKind::Slice(inner)
             | TypeKind::Array { ty: inner, .. } => inner.free_type_variables(),
+            TypeKind::Struct { fields, .. } => {
+                let mut res = HashSet::new();
 
+                for field in fields.iter() {
+                    res.extend(field.ty.free_type_variables());
+                }
+
+                res
+            }
             TypeKind::Tuple(types) => {
                 let mut res = HashSet::new();
 
@@ -253,6 +285,9 @@ impl core::fmt::Display for TypeKind {
                     }
                 }
                 write!(f, ")")
+            }
+            Self::Struct { name, .. } => {
+                write!(f, "{name}")
             }
             Self::FunctionPointer { .. } => todo!("Format function pointers"),
             Self::Any => write!(f, "*any"),

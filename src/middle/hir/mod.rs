@@ -114,6 +114,7 @@ pub struct ParentedNode {
 pub enum Node {
     Item(Rc<Item>),
     FunctionParameter(Rc<FunctionParameter>),
+    StructField(Rc<StructField>),
     Expression(Rc<Expression>),
     Block(Rc<Block>),
     Statement(Rc<Statement>),
@@ -128,6 +129,7 @@ impl Node {
         match self {
             Node::Item(v) => v.hir_id(),
             Node::FunctionParameter(v) => v.hir_id,
+            Node::StructField(v) => v.hir_id,
             Node::Expression(v) => v.hir_id,
             Node::Block(v) => v.hir_id,
             Node::Statement(v) => v.hir_id,
@@ -141,10 +143,11 @@ impl Node {
         match self {
             Node::Item(item) => Some(OwnerNode::Item(item)),
             Node::Block(_)
+            | Node::FunctionParameter(_)
+            | Node::StructField(_)
             | Node::Statement(_)
             | Node::LetStatement(_)
             | Node::Type(_)
-            | Node::FunctionParameter(_)
             | Node::Expression(_)
             | Node::PathSegment(_) => None,
         }
@@ -223,11 +226,23 @@ pub enum ItemKind {
         signature: FunctionSignature,
         body: BodyId,
     },
+    Struct {
+        name: Identifier,
+        fields: Rc<[Rc<StructField>]>,
+    },
     TypeAlias {
         name: Identifier,
         ty: Rc<Type>,
     },
-    // TODO: structs, enums, unions, static, const, submodule, impl
+    // TODO: enums, unions, static, const, submodule, impl
+}
+
+#[derive(Debug, Clone)]
+pub struct StructField {
+    pub hir_id: HirId,
+    pub name: Identifier,
+    pub ty: Rc<Type>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

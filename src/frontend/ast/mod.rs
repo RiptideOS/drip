@@ -24,6 +24,7 @@ pub struct Item {
 #[derive(Debug)]
 pub enum ItemKind {
     FunctionDefinition(Box<FunctionDefinition>),
+    StructDefinition(Box<StructDefinition>),
     TypeAlias(Box<TypeAlias>),
 }
 
@@ -62,6 +63,25 @@ pub struct FunctionParameterList {
 pub struct FunctionParameter {
     pub id: NodeId,
     pub span: Span,
+    pub name: Identifier,
+    pub ty: Type,
+}
+
+#[derive(Debug)]
+pub struct StructDefinition {
+    pub id: NodeId,
+    pub span: Span,
+    pub visibility: Visibility,
+    // TODO: attributes like "packed"
+    pub name: Identifier,
+    pub fields: Vec<StructField>,
+}
+
+#[derive(Debug)]
+pub struct StructField {
+    pub id: NodeId,
+    pub span: Span,
+    pub visibility: Visibility,
     pub name: Identifier,
     pub ty: Type,
 }

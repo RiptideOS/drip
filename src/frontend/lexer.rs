@@ -163,6 +163,7 @@ pub enum Keyword {
     Break,
     Continue,
     Return,
+    Struct,
     Type,
 }
 

@@ -10,8 +10,8 @@ use crate::frontend::{
         AssignmentOperatorKind, BinaryOperator, BinaryOperatorKind, Block, Expression,
         ExpressionKind, FunctionCallArgumentList, FunctionDefinition, FunctionParameter,
         FunctionParameterList, FunctionSignature, Identifier, Literal, LiteralKind, Local,
-        LocalKind, Module, QualifiedIdentifier, Statement, StatementKind, Type, TypeAlias,
-        TypeKind, UnaryOperator, UnaryOperatorKind, Visibility,
+        LocalKind, Module, QualifiedIdentifier, Statement, StatementKind, StructDefinition,
+        StructField, Type, TypeAlias, TypeKind, UnaryOperator, UnaryOperatorKind, Visibility,
     },
     lexer::{Keyword, Lexer, Span, Token, TokenKind},
 };
@@ -127,6 +127,15 @@ impl<'source> Parser<'source> {
                     kind: ItemKind::FunctionDefinition(function),
                 }
             }
+            TokenKind::Keyword(Keyword::Struct) => {
+                let structure = Box::new(self.parse_struct_definition());
+
+                Item {
+                    id: self.create_node_id(),
+                    span: structure.span,
+                    kind: ItemKind::StructDefinition(structure),
+                }
+            }
             TokenKind::Keyword(Keyword::Type) => {
                 let type_alias = Box::new(self.parse_type_alias());
 
@@ -230,6 +239,64 @@ impl<'source> Parser<'source> {
         FunctionParameter {
             id: self.create_node_id(),
             span: Span::new(name.span.start, ty.span.end),
+            name,
+            ty,
+        }
+    }
+
+    fn parse_struct_definition(&mut self) -> StructDefinition {
+        let strcut_keyword = self.expect_keyword(Keyword::Struct);
+        let name = self.parse_identifier();
+
+        let mut fields = Vec::new();
+
+        self.expect_next_to_be(TokenKind::OpenBrace);
+
+        // If the next token is not a closing paren, try parsing function
+        // parameters
+        if self.expect_peek("function parameter or closing brace").kind != TokenKind::CloseBrace {
+            // If a close paren was not found then there MUST be at least one
+            // parameter
+            fields.push(self.parse_struct_field());
+
+            // While the next token is a comma try and parse more parameters
+            while self
+                .lexer
+                .peek()
+                .is_some_and(|t| t.kind == TokenKind::Comma)
+            {
+                self.expect_next_to_be(TokenKind::Comma);
+
+                // Allow trailing commas
+                if self.expect_peek("struct field or comma").kind == TokenKind::CloseBrace {
+                    break;
+                }
+
+                fields.push(self.parse_struct_field());
+            }
+        }
+
+        let closing_brace = self.expect_next_to_be(TokenKind::CloseBrace);
+
+        StructDefinition {
+            id: self.create_node_id(),
+            span: Span::new(strcut_keyword.span.start, closing_brace.span.end),
+            visibility: Visibility::Private,
+            name,
+            fields,
+        }
+    }
+
+    // field: i32
+    fn parse_struct_field(&mut self) -> StructField {
+        let name = self.parse_identifier();
+        self.expect_next_to_be(TokenKind::Colon);
+        let ty = self.parse_type();
+
+        StructField {
+            id: self.create_node_id(),
+            span: Span::new(name.span.start, ty.span.end),
+            visibility: Visibility::Private,
             name,
             ty,
         }
