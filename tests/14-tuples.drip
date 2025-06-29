@@ -1,3 +1,8 @@
+//! This example showcases drip's anonymous structures known as tuples. Tuples
+//! allow for deep equality where fields of multiple tuples are checked
+//! pairwise. This behavior may be opted out of in the future if we allow
+//! overriding equality checks for user defined types.
+
 fn main() {
     let a = (1, 2, 3, 4, 5);
     let b = (1, 2, 3, 4, 5);

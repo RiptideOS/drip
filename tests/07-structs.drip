@@ -1,10 +1,11 @@
+//! Structure methods and constants not implemeted yet. This is just some
+//! experimentation for what they could look like
 
 pub struct Node {
     a: u32,
     b: i64,
     c: String
 }
-
 
 const Node::MAX_ID: u32 = 0;
 

@@ -36,3 +36,7 @@ The bootstrap compiler is currently in development and is written in Rust.
 | `isize` | Platform Pointer Width | Platform sized signed integer            |
 | `f32`   | 4                      | 32-bit floating point number             |
 | `f64`   | 8                      | 64-bit floating point number             |
+
+## Examples
+
+Example programs written in drip can be found in the `tests/` directory. All examples compile and work as expected unless otherwise noted in the header comment.

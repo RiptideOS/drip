@@ -1,3 +1,6 @@
+//! Some experimentation for how the import system could work. Not implemented
+//! yet.
+
 // Looks for a file named "core/lib.drip" in the include directories. If found,
 // parses the source code and then strips all the executable bodies so that they
 // are not included in this translation unit. It is expected that the module

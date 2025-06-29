@@ -1,5 +1,10 @@
+//! This example showcases how built-in types also support field accesses like
+//! user defined structures. Since the str type is just implemented internally
+//! as a struct with ptr and len fields, it can be operated on in the same
+//! manner. This behavior might be replaced with methods later.
+
 fn main()  {
     let a = "this is a string";
 
-   print("Pointer: 0x{}, Length: 0x{}\n", a.ptr, a.len);
+    print("Pointer: 0x{}, Length: 0x{}\n", a.ptr, a.len);
 }

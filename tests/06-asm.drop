@@ -1,3 +1,5 @@
+//! Inline and global assembly is not implemented yet
+
 fn main() {
     println("Hello, world!");
     syscall1(60, 0); // Exit

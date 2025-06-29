@@ -1,3 +1,6 @@
+//! Some experimentation for what intrinsic funcitons could look like in the
+//! core libraries
+
 @intrinsic
 fn println(message: str) {
     // compiler built-in

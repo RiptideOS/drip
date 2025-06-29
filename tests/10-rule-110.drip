@@ -1,5 +1,7 @@
 //! This example is an implementation of the Rule 110 algorithm, commonly used to
-//! show that a programming language is turring complete
+//! show that a programming language is turring complete. We are very close to
+//! getting this to work as soon as we get structure methods and array indexing
+//! implemented.
 
 // This is where we get Int32Vec
 //include core::collections;

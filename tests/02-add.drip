@@ -1,3 +1,6 @@
+//! This example showcases math operations, function calls, experession syntax,
+//! and string interpolation using the `print` intrinsic function
+
 fn main() {
     let a = 2;
     let one = {

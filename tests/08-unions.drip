@@ -1,3 +1,5 @@
+//! Some brainstorming for how unions could work. Not implemented yet.
+
 // Polymorphic auto-tagged union type
 pub union Option<T> {
     some: T,

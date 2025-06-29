@@ -1,3 +1,6 @@
+//! This example showcases writing loops in drip. Right now only while loops are
+//! supported, but structural iterators and for loops are likely to come soon
+
 fn main() {
     let mut x = 0;
     let mut y = 0;

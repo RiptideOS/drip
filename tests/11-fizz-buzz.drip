@@ -1,3 +1,5 @@
+//! A basic implementation of the classic FizzBuzz program in drip
+
 fn main() {
     let mut n = 0;
 

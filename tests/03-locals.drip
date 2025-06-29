@@ -1,3 +1,6 @@
+//! This example shows how all types for locals are infered and get assigned
+//! default types if no explicit types are given
+
 fn main() {
     let a = 1;
     let b = 2;

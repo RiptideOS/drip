@@ -1,3 +1,5 @@
+//! A program that computes fibonacci numbers iteratively
+
 fn main() {
     let mut n = 0;
 
