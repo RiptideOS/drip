@@ -510,6 +510,57 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
                 self.expression_to_register_map
                     .insert(expression.hir_id.local_id, struct_ptr_reg);
             }
+            hir::ExpressionKind::FieldAccess { target, name } => {
+                hir::visit::walk_expression(self, expression.clone());
+
+                let target_ty = self.type_map.get_type(target.hir_id);
+                let target_reg = self.expression_to_register_map[&target.hir_id.local_id];
+
+                // target type is either be a struct or struct-like type (str,
+                // slice, tuple, etc) . The register associated with this
+                // expression stores a pointer to the structure and we need to
+                // emit instructions for getting the pointer to the field and
+                // getting loading the field from memory. If the field type is
+                // >8 bytes in size, we just store the pointer to it instead of
+                // copying the data out.
+
+                match &*target_ty {
+                    ty::TypeKind::Pointer(_) => todo!(),
+                    ty::TypeKind::Str => {
+                        let structure_ty = lir::Struct::slice();
+
+                        let (field_index, field_ty) = match name.symbol.value() {
+                            "ptr" => (0, lir::Type::Pointer),
+                            "len" => (1, lir::Type::Integer(lir::IntegerWidth::I64)),
+                            _ => unreachable!(),
+                        };
+
+                        let field_ptr_reg = self.create_register_with_lir_type(lir::Type::Pointer);
+                        self.push_instruction(lir::Instruction::GetStructElementPointer {
+                            destination: field_ptr_reg,
+                            source: lir::Operand::Register(target_reg),
+                            ty: structure_ty,
+                            index: field_index,
+                        });
+                        let field_reg = self.create_register_with_lir_type(field_ty);
+                        self.push_instruction(lir::Instruction::LoadMem {
+                            destination: field_reg,
+                            source: lir::Operand::Register(field_ptr_reg),
+                        });
+
+                        self.expression_to_register_map
+                            .insert(expression.hir_id.local_id, field_reg);
+                    }
+                    ty::TypeKind::Slice(_) => todo!(),
+                    ty::TypeKind::Tuple(items) => todo!(),
+                    ty::TypeKind::Struct {
+                        def_id,
+                        name,
+                        fields,
+                    } => todo!(),
+                    _ => unreachable!(),
+                }
+            }
             hir::ExpressionKind::FunctionCall { target, arguments } => {
                 hir::visit::walk_expression(self, target.clone());
 
@@ -636,6 +687,41 @@ impl<'hir> hir::visit::Visitor for BodyLowereringContext<'hir> {
                                             let dest_reg = self.create_register_with_lir_type(
                                                 lir::Type::Integer((*int_kind).into()),
                                             );
+
+                                            self.push_instruction(lir::Instruction::FunctionCall {
+                                                target: lir::Operand::Immediate(
+                                                    lir::Immediate::FunctionLabel(
+                                                        InternedSymbol::new("__$print_i64_hex"),
+                                                    ),
+                                                ),
+                                                arguments: vec![lir::Operand::Register(arg_reg)],
+                                                destination: Some(dest_reg),
+                                            });
+
+                                            self.expression_to_register_map
+                                                .insert(expression.hir_id.local_id, dest_reg);
+                                        }
+                                        ty::TypeKind::UnsignedInteger(uint_kind) => {
+                                            let dest_reg = self.create_register_with_lir_type(
+                                                lir::Type::Integer((*uint_kind).into()),
+                                            );
+
+                                            self.push_instruction(lir::Instruction::FunctionCall {
+                                                target: lir::Operand::Immediate(
+                                                    lir::Immediate::FunctionLabel(
+                                                        InternedSymbol::new("__$print_i64_hex"),
+                                                    ),
+                                                ),
+                                                arguments: vec![lir::Operand::Register(arg_reg)],
+                                                destination: Some(dest_reg),
+                                            });
+
+                                            self.expression_to_register_map
+                                                .insert(expression.hir_id.local_id, dest_reg);
+                                        }
+                                        ty::TypeKind::Pointer(_) => {
+                                            let dest_reg = self
+                                                .create_register_with_lir_type(lir::Type::Pointer);
 
                                             self.push_instruction(lir::Instruction::FunctionCall {
                                                 target: lir::Operand::Immediate(

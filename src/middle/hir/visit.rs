@@ -241,6 +241,10 @@ pub fn walk_expression(visitor: &mut impl Visitor, expression: Rc<Expression>) {
         ExpressionKind::Tuple(expressions) => expressions
             .iter()
             .for_each(|e| visitor.visit_expression(e.clone())),
+        ExpressionKind::FieldAccess { target, name } => {
+            visitor.visit_expression(target.clone());
+            visitor.visit_identifier(name);
+        }
         ExpressionKind::FunctionCall { target, arguments } => {
             visitor.visit_expression(target.clone());
 

@@ -217,6 +217,10 @@ pub fn walk_expression<'a>(visitor: &mut impl Visitor<'a>, expression: &'a Expre
             expressions.iter().for_each(|e| visitor.visit_expression(e))
         }
         ExpressionKind::Block(block) => visitor.visit_block(block),
+        ExpressionKind::FieldAccess { target, name } => {
+            visitor.visit_expression(target);
+            visitor.visit_identifier(name);
+        }
         ExpressionKind::FunctionCall { target, arguments } => {
             visitor.visit_expression(target);
             visitor.visit_function_call_argument_list(arguments);

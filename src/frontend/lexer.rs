@@ -52,6 +52,7 @@ pub enum TokenKind {
     Comma,        // ,
 
     /* Other */
+    Dot,         // .
     Colon,       // :
     DoubleColon, // ::
     Arrow,       // ->
@@ -180,6 +181,7 @@ static SINGLE_TOKENS: Lazy<BTreeMap<char, TokenKind>> = Lazy::new(|| {
         (',', TokenKind::Comma),
         ('!', TokenKind::Bang),
         ('~', TokenKind::Tilde),
+        ('.', TokenKind::Dot),
         (':', TokenKind::Colon),
         ('*', TokenKind::Asterisk),
         ('-', TokenKind::Minus),

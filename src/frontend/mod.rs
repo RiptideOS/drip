@@ -142,6 +142,7 @@ impl SourceFile {
                     | TokenKind::CloseBrace
                     | TokenKind::Semicolon
                     | TokenKind::Comma
+                    | TokenKind::Dot
                     | TokenKind::Colon
                     | TokenKind::DoubleColon
                     | TokenKind::Arrow

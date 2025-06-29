@@ -1,0 +1,5 @@
+fn main()  {
+    let a = "this is a string";
+
+   print("Pointer: 0x{}, Length: 0x{}\n", a.ptr, a.len);
+}

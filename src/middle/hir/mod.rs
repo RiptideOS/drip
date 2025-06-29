@@ -331,6 +331,10 @@ pub enum ExpressionKind {
     Path(Path),
     Block(Rc<Block>),
     Tuple(Rc<[Rc<Expression>]>),
+    FieldAccess {
+        target: Rc<Expression>,
+        name: Identifier,
+    },
     FunctionCall {
         target: Rc<Expression>,
         arguments: Rc<[Rc<Expression>]>,

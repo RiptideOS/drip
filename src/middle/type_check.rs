@@ -34,6 +34,7 @@ use crate::{
     frontend::{
         SourceFile,
         ast::{AssignmentOperatorClass, BinaryOperatorClass, UnaryOperatorKind},
+        intern::InternedSymbol,
         lexer::Span,
     },
     index::Index,
@@ -216,7 +217,8 @@ impl<'hir> TypeContext<'hir> {
                    TypeBoundary::ImplicitReturn => format!(
                     "implicit return type {actual} does not match the function signature's return type {expected}"
                 ),
-                TypeBoundary::FunctionCall
+                TypeBoundary::FieldAccess
+                | TypeBoundary::FunctionCall
                 | TypeBoundary::Deref
                 | TypeBoundary::LogicalOp
                 | TypeBoundary::ArithmeticOp | TypeBoundary::LoopControlFlow  => {
@@ -233,6 +235,9 @@ impl<'hir> TypeContext<'hir> {
                 }
                 TypeUsage::LogicalOperation => {
                     format!("cannot use type {provided} in a logical context")
+                }
+                    TypeUsage::FieldAccess => {
+                    format!("{provided} does not support field access")
                 }
                 TypeUsage::FunctionCall => {
                     format!("cannot use type {provided} as the target of a function call")
@@ -265,6 +270,7 @@ impl<'hir> TypeContext<'hir> {
              TypeErrorKind::ArrayLengthMismatch { expected, actual } => format!("arrays have different length, expected {expected} parameters but found {actual}"),
             TypeErrorKind::IllegalMutation => "cannot mutate immutable variable".to_string(),
             TypeErrorKind::InvalidAssignment => "invalid left-hand side of assignment".to_string(),
+            TypeErrorKind::UnknownFieldAccess {target, name } => format!("field `{name}` does not exist on type {target}"),
         };
 
         eprintln!(
@@ -398,6 +404,8 @@ enum TypeBoundary {
     /// If an explicit type is specified for a let binding, the expression must
     /// have that type
     LetStatement,
+    /// If a field is accessed, it must exist on the target type
+    FieldAccess,
     /// Function arguments must match the expected number
     FunctionCall,
     /// Function argument type must match function paramter type
@@ -1014,6 +1022,8 @@ enum TypeErrorKind {
     IllegalMutation,
     /// Only certain types of values may be on the lhs of an assignment
     InvalidAssignment,
+    /// Accessed fields must exist
+    UnknownFieldAccess { target: Type, name: InternedSymbol },
 }
 
 impl TypeErrorKind {
@@ -1030,7 +1040,8 @@ impl TypeErrorKind {
             | TypeErrorKind::TupleLengthMismatch { .. }
             | TypeErrorKind::ArrayLengthMismatch { .. }
             | TypeErrorKind::IllegalMutation
-            | TypeErrorKind::InvalidAssignment => vec![],
+            | TypeErrorKind::InvalidAssignment
+            | TypeErrorKind::UnknownFieldAccess { .. } => vec![],
         }
     }
 }
@@ -1039,6 +1050,7 @@ impl TypeErrorKind {
 enum TypeUsage {
     ArithmeticOperation,
     LogicalOperation,
+    FieldAccess,
     FunctionCall,
     Deref,
 }
@@ -1261,6 +1273,70 @@ impl<'tcx, 'hir> hir::visit::Visitor for TypeChecker<'tcx, 'hir> {
                     .intern_type(TypeKind::Tuple(expression_tys));
 
                 self.insert_type(expression.hir_id, ty);
+            }
+            hir::ExpressionKind::FieldAccess { target, name } => {
+                let target_ty = self.get_type(target.hir_id);
+
+                match &*target_ty {
+                    TypeKind::Str => match name.symbol.value() {
+                        "ptr" => {
+                            let u8_ty = self
+                                .type_context
+                                .get_primitive_type(PrimitiveKind::UInt(UIntKind::U8));
+                            let ty = self.type_context.intern_type(TypeKind::Pointer(u8_ty));
+
+                            self.insert_type(expression.hir_id, ty);
+                        }
+                        "len" => {
+                            let ty = self
+                                .type_context
+                                .get_primitive_type(PrimitiveKind::UInt(UIntKind::USize));
+
+                            self.insert_type(expression.hir_id, ty);
+                        }
+                        _ => {
+                            let err = self.type_context.get_error_type();
+                            self.insert_type(expression.hir_id, err);
+
+                            self.errors.push(TypeError {
+                                origin: TypeConstraintOrigin {
+                                    span: target.span,
+                                    kind: TypeBoundary::FieldAccess,
+                                },
+                                kind: TypeErrorKind::UnknownFieldAccess {
+                                    target: target_ty,
+                                    name: name.symbol,
+                                },
+                            });
+                        }
+                    },
+                    TypeKind::Pointer(_) => todo!(),
+                    TypeKind::Slice(_) => todo!(),
+                    TypeKind::Array { ty, length } => todo!(),
+                    TypeKind::Tuple(items) => todo!(),
+                    TypeKind::Struct {
+                        def_id,
+                        name,
+                        fields,
+                    } => todo!(),
+                    TypeKind::Error => todo!(),
+                    _ => {
+                        // All other types do not support field access
+                        let err = self.type_context.get_error_type();
+                        self.insert_type(expression.hir_id, err);
+
+                        self.errors.push(TypeError {
+                            origin: TypeConstraintOrigin {
+                                span: target.span,
+                                kind: TypeBoundary::FieldAccess,
+                            },
+                            kind: TypeErrorKind::InvalidOperation {
+                                attempted_usage: TypeUsage::FieldAccess,
+                                provided: target_ty.clone(),
+                            },
+                        });
+                    }
+                }
             }
             hir::ExpressionKind::FunctionCall { target, arguments } => {
                 // check that the target of the call is a function pointer

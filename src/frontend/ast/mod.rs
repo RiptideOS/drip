@@ -191,6 +191,10 @@ pub enum ExpressionKind {
     Grouping(Box<Expression>),
     Tuple(Box<[Expression]>),
     Block(Box<Block>),
+    FieldAccess {
+        target: Box<Expression>,
+        name: Identifier,
+    },
     FunctionCall {
         target: Box<Expression>,
         arguments: Box<FunctionCallArgumentList>,

@@ -382,6 +382,10 @@ impl<'a, 'ast> ItemLoweringContext<'a, 'ast> {
             ast::ExpressionKind::Block(block) => {
                 hir::ExpressionKind::Block(self.lower_block(block))
             }
+            ast::ExpressionKind::FieldAccess { target, name } => hir::ExpressionKind::FieldAccess {
+                target: self.lower_expression(target),
+                name: self.lower_ident(name),
+            },
             ast::ExpressionKind::FunctionCall { target, arguments } => {
                 hir::ExpressionKind::FunctionCall {
                     target: self.lower_expression(target),

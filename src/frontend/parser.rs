@@ -656,7 +656,8 @@ impl<'source> Parser<'source> {
     /// cast           -> unary ( "as" TYPE )*
     /// unary          -> ( "!" | "~" | "-" | "*" ) unary
     ///                   | function_call
-    /// function_call  -> block ( "(" ( expression ( "," expression )* )? ")" )*
+    /// function_call  -> postfix ( "(" ( expression ( "," expression )* )? ")" )*
+    /// postfix        -> block ( "." IDENTIFIER )*
     /// block          -> BLOCK
     ///                   | "if" expression BLOCK ( "else" expression )?
     ///                   | "while" expression BLOCK
@@ -1126,7 +1127,7 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_function_call_expression(&mut self) -> Expression {
-        let mut expression = self.parse_expression_with_block();
+        let mut expression = self.parse_postfix_expression();
 
         while self
             .expect_peek("open parenthesis, semicolon, or closing brace")
@@ -1182,6 +1183,30 @@ impl<'source> Parser<'source> {
             span: Span::new(open_paren.span.start, close_paren.span.end),
             arguments,
         }
+    }
+
+    fn parse_postfix_expression(&mut self) -> Expression {
+        let mut expression = self.parse_expression_with_block();
+
+        while self
+            .expect_peek("dot, open parenthesis, semicolon, or closing brace")
+            .kind
+            == TokenKind::Dot
+        {
+            self.expect_next_to_be(TokenKind::Dot);
+            let name = self.parse_identifier();
+
+            expression = Expression {
+                id: self.create_node_id(),
+                span: Span::new(expression.span.start, name.span.end),
+                kind: ExpressionKind::FieldAccess {
+                    target: Box::new(expression),
+                    name,
+                },
+            }
+        }
+
+        expression
     }
 
     fn parse_expression_with_block(&mut self) -> Expression {
